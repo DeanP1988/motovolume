@@ -580,7 +580,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v0.9)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.0)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="unitBtn" class="pill">km/h</button>
@@ -989,7 +989,14 @@
     const gainValue = normalized === 0 ? 0.0001 : Math.pow(normalized, 1.6);
 
     if (audioCtx && gainNode) {
-      gainNode.gain.setTargetAtTime(gainValue, audioCtx.currentTime, smoothingSeconds / 3);
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+      const now = audioCtx.currentTime;
+      const rampDuration = Math.max(0.15, smoothingSeconds * 0.45);
+      gainNode.gain.cancelScheduledValues(now);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+      gainNode.gain.linearRampToValueAtTime(gainValue, now + rampDuration);
     }
   }
 
@@ -1405,7 +1412,8 @@
       if (track.blob) {
         arrayBuf = await track.blob.arrayBuffer();
       } else if (track.url) {
-        const res = await fetch(track.url);
+        const res = await fetch(track.url, { mode: 'cors' });
+        if (!res.ok) throw new Error('Stream fetch failed');
         arrayBuf = await res.arrayBuffer();
       }
       if (arrayBuf) {
@@ -1425,73 +1433,33 @@
 
     currentTrackIndex = (index + playlist.length) % playlist.length;
     const track = playlist[currentTrackIndex];
-    audioEl.src = track.url;
-    audioEl.load();
-    trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
-    updateMediaSession(track.name);
-    renderPlaylist();
-
-    if (autoplay) {
-      if (document.hidden) {
-        audioEl.play().then(() => {
-          playBtn.textContent = '⏸';
-          renderPlaylist();
-        }).catch(() => {});
-      } else {
-        // Start native audio immediately so there's zero wait, then upgrade to decoded Web Audio buffer
-        audioEl.play().then(() => {
-          playBtn.textContent = '⏸';
-          renderPlaylist();
-        }).catch(() => {
-          showToast('Tap Play to start audio');
-        });
-
-        await decodeTrackBuffer(track);
-        if (decodedAudioBuffer && !audioEl.paused && !document.hidden) {
-          const pos = audioEl.currentTime;
-          audioEl.pause();
-          startBufferPlayback(pos);
-          applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
-          playBtn.textContent = '⏸';
-          renderPlaylist();
-        }
-      }
-    } else {
-      decodeTrackBuffer(track);
-    }
-  }
-
-  function loadTrack(index, autoplay = false) {
-    if (!playlist.length) return;
-    stopSynth();
-    stopBufferPlayback();
-    currentTrackIndex = (index + playlist.length) % playlist.length;
-    const track = playlist[currentTrackIndex];
     audioEl.loop = false;
     audioEl.muted = false;
-    audioEl.src = track.url;
-    audioEl.load();
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
     updateMediaSession(track.name);
     renderPlaylist();
 
     if (autoplay) {
       initAudioEngine();
-      // Start native <audio> immediately on tap to anchor iOS background media session,
-      // then switch to decoded Web Audio buffer + silent keep-alive so GainNode volume stays active even when locked!
-      audioEl.play().then(async () => {
-        playBtn.textContent = '⏸';
-        renderPlaylist();
+      // Start silent keep-alive immediately on tap so iOS authorizes background audio
+      audioEl.src = silentKeepAliveUrl;
+      audioEl.loop = true;
+      audioEl.play().catch(() => {});
+      playBtn.textContent = '⏸';
 
-        await decodeTrackBuffer(track);
-        if (decodedAudioBuffer && !audioEl.paused) {
-          const pos = audioEl.currentTime;
-          startBufferPlayback(pos);
-          applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
-        }
-      }).catch(() => {
-        showToast('Tap Play to start audio');
-      });
+      await decodeTrackBuffer(track);
+      if (decodedAudioBuffer) {
+        startBufferPlayback(0);
+        applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
+        renderPlaylist();
+      } else {
+        // Fallback if a remote stream blocks CORS buffer decoding
+        audioEl.loop = false;
+        audioEl.src = track.url;
+        audioEl.load();
+        audioEl.play().catch(() => showToast('Tap Play to start audio'));
+        renderPlaylist();
+      }
     } else {
       decodeTrackBuffer(track);
     }
@@ -1594,32 +1562,37 @@
       trackNameEl.textContent = playlist.length ? playlist[currentTrackIndex].name : 'Synth paused';
       return;
     }
+
     if (!playlist.length) {
       startSynth();
       return;
     }
-    initAudioEngine();
 
-    const isCurrentlyPlaying = isUsingWebAudioBuffer || !audioEl.paused;
+    const isCurrentlyPlaying = isUsingWebAudioBuffer || (!audioEl.paused && audioEl.src !== silentKeepAliveUrl);
     if (isCurrentlyPlaying) {
       if (isUsingWebAudioBuffer && audioCtx) {
         bufferPauseOffset = Math.max(0, audioCtx.currentTime - bufferStartTime);
         stopBufferPlayback();
       }
       if (!audioEl.paused) {
-        bufferPauseOffset = audioEl.currentTime;
+        if (audioEl.src !== silentKeepAliveUrl) {
+          bufferPauseOffset = audioEl.currentTime;
+        }
         audioEl.pause();
       }
       audioEl.muted = false;
       playBtn.textContent = '▶';
     } else {
-      audioEl.currentTime = bufferPauseOffset;
-      if (!document.hidden && decodedAudioBuffer) {
-        audioEl.muted = true;
-        await audioEl.play().catch(() => {});
+      if (!decodedAudioBuffer && playlist[currentTrackIndex]) {
+        await decodeTrackBuffer(playlist[currentTrackIndex]);
+      }
+      if (decodedAudioBuffer) {
         startBufferPlayback(bufferPauseOffset);
         applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
       } else {
+        audioEl.loop = false;
+        audioEl.src = playlist[currentTrackIndex].url;
+        audioEl.currentTime = bufferPauseOffset;
         audioEl.muted = false;
         await audioEl.play().catch(() => {});
       }
@@ -1628,9 +1601,13 @@
     renderPlaylist();
   });
 
-  nextBtn.addEventListener('click', () => loadTrack(currentTrackIndex + 1, isUsingWebAudioBuffer || !audioEl.paused));
-  prevBtn.addEventListener('click', () => loadTrack(currentTrackIndex - 1, isUsingWebAudioBuffer || !audioEl.paused));
-  audioEl.addEventListener('ended', () => loadTrack(currentTrackIndex + 1, true));
+  nextBtn.addEventListener('click', () => loadTrack(currentTrackIndex + 1, isUsingWebAudioBuffer || (!audioEl.paused && audioEl.src !== silentKeepAliveUrl)));
+  prevBtn.addEventListener('click', () => loadTrack(currentTrackIndex - 1, isUsingWebAudioBuffer || (!audioEl.paused && audioEl.src !== silentKeepAliveUrl)));
+  audioEl.addEventListener('ended', () => {
+    if (audioEl.src !== silentKeepAliveUrl) {
+      loadTrack(currentTrackIndex + 1, true);
+    }
+  });
 
   // --- GPS & WAKE LOCK ---
   async function requestWakeLock() {
