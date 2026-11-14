@@ -580,7 +580,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.1)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.2)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="unitBtn" class="pill">km/h</button>
@@ -645,7 +645,8 @@
         <div id="playlistList"></div>
       </div>
 
-      <audio id="audioEl" playsinline preload="auto"></audio>
+      <audio id="audioEl" crossorigin="anonymous" playsinline preload="auto"></audio>
+      <audio id="bgAudioEl" playsinline preload="auto"></audio>
     </div>
 
     <!-- Speed -> Volume Curve + Live Graph -->
@@ -771,6 +772,7 @@
 
   // --- DOM REFERENCES ---
   const audioEl = document.getElementById('audioEl');
+  const bgAudioEl = document.getElementById('bgAudioEl');
   const playBtn = document.getElementById('playBtn');
   const nextBtn = document.getElementById('nextBtn');
   const prevBtn = document.getElementById('prevBtn');
@@ -796,11 +798,14 @@
   const cloudUrlInput = document.getElementById('cloudUrlInput');
   const cloudImportBtn = document.getElementById('cloudImportBtn');
   const playlistToggleBtn = document.getElementById('playlistToggleBtn');
-  const playlistDrawer = document.getElementById('playlistDrawer');
-  const playlistList = document.getElementById('playlistList');
   const playlistCountLabel = document.getElementById('playlistCountLabel');
   const playlistChevron = document.getElementById('playlistChevron');
+  const playlistDrawer = document.getElementById('playlistDrawer');
+  const playlistList = document.getElementById('playlistList');
   const iosToast = document.getElementById('iosToast');
+
+  let mediaElementSource = null;
+  let isTrackPlaying = false;
 
   let toastTimer = null;
   function showToast(msg) {
@@ -810,71 +815,7 @@
     toastTimer = setTimeout(() => iosToast.classList.remove('show'), 2200);
   }
 
-  // --- WEB AUDIO API ENGINE (Keeps GainNode alive in background via silent native <audio> anchor) ---
-  function createSilentWavUrl(durationSec = 2) {
-    const sampleRate = 8000;
-    const numSamples = sampleRate * durationSec;
-    const buffer = new ArrayBuffer(44 + numSamples);
-    const view = new DataView(buffer);
-    const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
-    writeStr(0, 'RIFF');
-    view.setUint32(4, 36 + numSamples, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate, true);
-    view.setUint16(32, 1, true);
-    view.setUint16(34, 8, true);
-    writeStr(36, 'data');
-    view.setUint32(40, numSamples, true);
-    new Uint8Array(buffer, 44).fill(128);
-    return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
-  }
-  const silentKeepAliveUrl = createSilentWavUrl(3);
-
-  function encodeScaledWavBlob(audioBuffer, gainMultiplier) {
-    const numCh = Math.min(2, audioBuffer.numberOfChannels);
-    const sampleRate = audioBuffer.sampleRate;
-    const length = audioBuffer.length;
-    const bytesPerSample = 2;
-    const blockAlign = numCh * bytesPerSample;
-    const dataSize = length * blockAlign;
-    const wavBuf = new ArrayBuffer(44 + dataSize);
-    const view = new DataView(wavBuf);
-    const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
-
-    writeStr(0, 'RIFF');
-    view.setUint32(4, 36 + dataSize, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, numCh, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * blockAlign, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, 16, true);
-    writeStr(36, 'data');
-    view.setUint32(40, dataSize, true);
-
-    const channels = [];
-    for (let c = 0; c < numCh; c++) channels.push(audioBuffer.getChannelData(c));
-
-    let offset = 44;
-    for (let i = 0; i < length; i++) {
-      for (let c = 0; c < numCh; c++) {
-        let s = channels[c][i] * gainMultiplier;
-        s = Math.max(-1, Math.min(1, s));
-        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-        offset += 2;
-      }
-    }
-    return URL.createObjectURL(new Blob([wavBuf], { type: 'audio/wav' }));
-  }
-
+  // --- WEB AUDIO API ENGINE (Live GainNode for Foreground + Native bgAudioEl for Lock Screen) ---
   function initAudioEngine() {
     if ('audioSession' in navigator) {
       try {
@@ -891,8 +832,16 @@
       gainNode.gain.setValueAtTime(norm === 0 ? 0.0001 : Math.pow(norm, 1.6), audioCtx.currentTime);
       gainNode.connect(audioCtx.destination);
 
+      // Connect primary <audio> element directly to GainNode so all MP3s & Archive.org streams ramp smoothly
+      if (!mediaElementSource) {
+        try {
+          mediaElementSource = audioCtx.createMediaElementSource(audioEl);
+          mediaElementSource.connect(gainNode);
+        } catch (e) {}
+      }
+
       audioCtx.onstatechange = () => {
-        if (audioCtx.state === 'suspended' && (isUsingWebAudioBuffer || synthPlaying)) {
+        if (audioCtx.state === 'suspended' && (isTrackPlaying || synthPlaying) && !document.hidden) {
           audioCtx.resume().catch(() => {});
         }
       };
@@ -902,79 +851,28 @@
     }
   }
 
-  function stopBufferPlayback() {
-    if (bufferSourceNode) {
-      try {
-        bufferSourceNode.onended = null;
-        bufferSourceNode.stop();
-        bufferSourceNode.disconnect();
-      } catch (e) {}
-      bufferSourceNode = null;
-    }
-    isUsingWebAudioBuffer = false;
-  }
-
-  function startBufferPlayback(offsetSeconds = 0) {
-    if (!decodedAudioBuffer || !audioCtx || !gainNode) return false;
-    stopBufferPlayback();
-    initAudioEngine();
-
-    // Keep silent native <audio> looping so iOS holds open the hardware background audio thread
-    if (audioEl.src !== silentKeepAliveUrl) {
-      audioEl.src = silentKeepAliveUrl;
-      audioEl.loop = true;
-    }
-    audioEl.muted = false;
-    if (audioEl.paused) {
-      audioEl.play().catch(() => {});
-    }
-
-    const source = audioCtx.createBufferSource();
-    source.buffer = decodedAudioBuffer;
-    source.connect(gainNode);
-    const safeOffset = Math.max(0, Math.min(offsetSeconds, decodedAudioBuffer.duration - 0.05));
-    bufferStartTime = audioCtx.currentTime - safeOffset;
-    bufferPauseOffset = safeOffset;
-    isUsingWebAudioBuffer = true;
-
-    source.onended = () => {
-      if (isUsingWebAudioBuffer) {
-        isUsingWebAudioBuffer = false;
-        loadTrack(currentTrackIndex + 1, true);
-      }
-    };
-
-    source.start(0, safeOffset);
-    bufferSourceNode = source;
-    return true;
-  }
-
-  // Keep GainNode running in background; if iOS ever suspends AudioContext, hand off a gain-baked WAV
+  // Seamless Foreground (Speed-Gain Active) <-> Background (Lock Screen Audio Active) Handoff
   document.addEventListener('visibilitychange', () => {
+    const track = playlist[currentTrackIndex];
     if (document.hidden) {
-      if (isUsingWebAudioBuffer && audioCtx) {
-        audioCtx.resume().catch(() => {});
-        setTimeout(() => {
-          if (document.hidden && isUsingWebAudioBuffer && audioCtx.state !== 'running' && decodedAudioBuffer) {
-            const elapsed = Math.max(0, audioCtx.currentTime - bufferStartTime);
-            const norm = calculateVolumeForSpeed(filteredSpeed) / 100;
-            const gainMult = norm === 0 ? 0.0001 : Math.pow(norm, 1.6);
-            stopBufferPlayback();
-            audioEl.loop = false;
-            audioEl.src = encodeScaledWavBlob(decodedAudioBuffer, gainMult);
-            audioEl.currentTime = elapsed;
-            audioEl.play().catch(() => {});
-          }
-        }, 250);
+      // Hand off to untouched bgAudioEl so iOS never mutes audio when locked or in Maps
+      if (isTrackPlaying && track && !audioEl.paused) {
+        const pos = audioEl.currentTime || 0;
+        audioEl.pause();
+        bgAudioEl.src = track.url;
+        bgAudioEl.currentTime = pos;
+        bgAudioEl.play().catch(() => {});
       }
     } else {
       if (watchId !== null) requestWakeLock();
-      if (audioCtx && audioCtx.state === 'suspended') {
-        audioCtx.resume().catch(() => {});
-      }
-      if (!isUsingWebAudioBuffer && !audioEl.paused && decodedAudioBuffer && !synthPlaying && audioEl.src !== silentKeepAliveUrl) {
-        const currentPos = audioEl.currentTime;
-        startBufferPlayback(currentPos);
+      initAudioEngine();
+      // Hand back to GainNode-routed audioEl so speed-volume filtering resumes immediately
+      if (isTrackPlaying && track && !bgAudioEl.paused) {
+        const pos = bgAudioEl.currentTime || 0;
+        bgAudioEl.pause();
+        audioEl.src = track.url;
+        audioEl.currentTime = pos;
+        audioEl.play().catch(() => {});
         applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
       }
     }
@@ -1233,12 +1131,15 @@
 
   function startSynth() {
     initAudioEngine();
+    isTrackPlaying = false;
     if (!audioEl.paused) audioEl.pause();
+    if (!bgAudioEl.paused) bgAudioEl.pause();
     synthPlaying = true;
     synthStep = 0;
     demoSynthBtn.classList.add('active');
     playBtn.textContent = '⏸';
     trackNameEl.textContent = '♫ Synthwave Test Loop (Live Gain)';
+    applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
     playSynthStep();
     synthTimer = setInterval(playSynthStep, 280);
   }
@@ -1248,7 +1149,7 @@
     clearInterval(synthTimer);
     synthTimer = null;
     demoSynthBtn.classList.remove('active');
-    if (audioEl.paused) {
+    if (!isTrackPlaying) {
       playBtn.textContent = '▶';
     }
   }
@@ -1343,8 +1244,11 @@
         savePlaylistToDB();
         renderPlaylist();
         if (playlist.length === 0) {
+          isTrackPlaying = false;
           audioEl.pause();
+          bgAudioEl.pause();
           audioEl.removeAttribute('src');
+          bgAudioEl.removeAttribute('src');
           playBtn.textContent = '▶';
           trackNameEl.textContent = 'Queue cleared';
         }
@@ -1359,8 +1263,11 @@
     footer.querySelector('.clear-queue-btn').addEventListener('click', () => {
       playlist = [];
       currentTrackIndex = 0;
+      isTrackPlaying = false;
       audioEl.pause();
+      bgAudioEl.pause();
       audioEl.removeAttribute('src');
+      bgAudioEl.removeAttribute('src');
       playBtn.textContent = '▶';
       trackNameEl.textContent = 'Queue cleared';
       savePlaylistToDB();
@@ -1382,20 +1289,20 @@
         album: 'Ride Mix'
       });
       navigator.mediaSession.setActionHandler('play', () => {
-        if (document.hidden || !decodedAudioBuffer) {
-          audioEl.play();
+        isTrackPlaying = true;
+        if (document.hidden) {
+          bgAudioEl.play().catch(() => {});
         } else {
-          startBufferPlayback(bufferPauseOffset);
+          initAudioEngine();
+          audioEl.play().catch(() => {});
         }
         playBtn.textContent = '⏸';
         renderPlaylist();
       });
       navigator.mediaSession.setActionHandler('pause', () => {
-        if (isUsingWebAudioBuffer && audioCtx) {
-          bufferPauseOffset = Math.max(0, audioCtx.currentTime - bufferStartTime);
-          stopBufferPlayback();
-        }
+        isTrackPlaying = false;
         audioEl.pause();
+        bgAudioEl.pause();
         playBtn.textContent = '▶';
         renderPlaylist();
       });
@@ -1404,65 +1311,44 @@
     }
   }
 
-  async function decodeTrackBuffer(track) {
-    decodedAudioBuffer = null;
-    try {
-      initAudioEngine();
-      let arrayBuf;
-      if (track.blob) {
-        arrayBuf = await track.blob.arrayBuffer();
-      } else if (track.url) {
-        const res = await fetch(track.url, { mode: 'cors' });
-        if (!res.ok) throw new Error('Stream fetch failed');
-        arrayBuf = await res.arrayBuffer();
-      }
-      if (arrayBuf) {
-        decodedAudioBuffer = await audioCtx.decodeAudioData(arrayBuf);
-      }
-    } catch (e) {
-      decodedAudioBuffer = null;
-    }
-  }
-
   async function loadTrack(index, autoplay = false) {
     if (!playlist.length) return;
     stopSynth();
-    stopBufferPlayback();
     audioEl.pause();
-    bufferPauseOffset = 0;
+    bgAudioEl.pause();
 
     currentTrackIndex = (index + playlist.length) % playlist.length;
     const track = playlist[currentTrackIndex];
-    audioEl.loop = false;
-    audioEl.muted = false;
+    audioEl.src = track.url;
+    audioEl.currentTime = 0;
+    bgAudioEl.src = track.url;
+    bgAudioEl.currentTime = 0;
+
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
     updateMediaSession(track.name);
-    renderPlaylist();
 
     if (autoplay) {
+      isTrackPlaying = true;
       initAudioEngine();
-      // Start silent keep-alive immediately on tap so iOS authorizes background audio
-      audioEl.src = silentKeepAliveUrl;
-      audioEl.loop = true;
-      audioEl.play().catch(() => {});
+      applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
       playBtn.textContent = '⏸';
-
-      await decodeTrackBuffer(track);
-      if (decodedAudioBuffer) {
-        startBufferPlayback(0);
-        applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
-        renderPlaylist();
-      } else {
-        // Fallback if a remote stream blocks CORS buffer decoding
-        audioEl.loop = false;
-        audioEl.src = track.url;
-        audioEl.load();
-        audioEl.play().catch(() => showToast('Tap Play to start audio'));
-        renderPlaylist();
+      renderPlaylist();
+      try {
+        if (document.hidden) {
+          await bgAudioEl.play();
+        } else {
+          await audioEl.play();
+        }
+      } catch (err) {
+        isTrackPlaying = false;
+        playBtn.textContent = '▶';
+        showToast('Tap Play to start audio');
       }
     } else {
-      decodeTrackBuffer(track);
+      isTrackPlaying = false;
+      playBtn.textContent = '▶';
     }
+    renderPlaylist();
   }
 
   fileInput.addEventListener('change', (e) => {
@@ -1570,19 +1456,10 @@
       return;
     }
 
-    const isCurrentlyPlaying = isUsingWebAudioBuffer || (!audioEl.paused && audioEl.src !== silentKeepAliveUrl);
-    if (isCurrentlyPlaying) {
-      if (isUsingWebAudioBuffer && audioCtx) {
-        bufferPauseOffset = Math.max(0, audioCtx.currentTime - bufferStartTime);
-        stopBufferPlayback();
-      }
-      if (!audioEl.paused) {
-        if (audioEl.src !== silentKeepAliveUrl) {
-          bufferPauseOffset = audioEl.currentTime;
-        }
-        audioEl.pause();
-      }
-      audioEl.muted = false;
+    if (isTrackPlaying) {
+      isTrackPlaying = false;
+      audioEl.pause();
+      bgAudioEl.pause();
       playBtn.textContent = '▶';
       renderPlaylist();
       return;
@@ -1591,49 +1468,29 @@
     const track = playlist[currentTrackIndex];
     if (!track) return;
 
-    // Immediately unlock iOS audio playback directly inside the click gesture
+    if (!audioEl.src || audioEl.src === window.location.href) {
+      audioEl.src = track.url;
+    }
+
+    isTrackPlaying = true;
+    applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
     playBtn.textContent = '⏸';
     renderPlaylist();
 
-    if (decodedAudioBuffer) {
-      startBufferPlayback(bufferPauseOffset);
-      applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
-      renderPlaylist();
-      return;
-    }
-
-    // Start streaming immediately so audio plays right away while buffer decodes
-    audioEl.loop = false;
-    audioEl.src = track.url;
-    audioEl.currentTime = bufferPauseOffset;
-    audioEl.muted = false;
     try {
       await audioEl.play();
     } catch (err) {
+      isTrackPlaying = false;
       playBtn.textContent = '▶';
-      showToast('Unable to play track — check connection');
       renderPlaylist();
-      return;
-    }
-
-    // Decode in background for speed-based GainNode volume ramping
-    decodeTrackBuffer(track).then(() => {
-      if (decodedAudioBuffer && !audioEl.paused && audioEl.src !== silentKeepAliveUrl && !synthPlaying) {
-        const currentPos = audioEl.currentTime;
-        startBufferPlayback(currentPos);
-        applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
-        renderPlaylist();
-      }
-    });
-  });
-
-  nextBtn.addEventListener('click', () => loadTrack(currentTrackIndex + 1, isUsingWebAudioBuffer || (!audioEl.paused && audioEl.src !== silentKeepAliveUrl)));
-  prevBtn.addEventListener('click', () => loadTrack(currentTrackIndex - 1, isUsingWebAudioBuffer || (!audioEl.paused && audioEl.src !== silentKeepAliveUrl)));
-  audioEl.addEventListener('ended', () => {
-    if (audioEl.src !== silentKeepAliveUrl) {
-      loadTrack(currentTrackIndex + 1, true);
+      showToast('Unable to play track — check connection');
     }
   });
+
+  nextBtn.addEventListener('click', () => loadTrack(currentTrackIndex + 1, isTrackPlaying));
+  prevBtn.addEventListener('click', () => loadTrack(currentTrackIndex - 1, isTrackPlaying));
+  audioEl.addEventListener('ended', () => loadTrack(currentTrackIndex + 1, true));
+  bgAudioEl.addEventListener('ended', () => loadTrack(currentTrackIndex + 1, true));
 
   // --- GPS & WAKE LOCK ---
   async function requestWakeLock() {
@@ -1751,36 +1608,60 @@
       canvas.height = 512;
       const ctx = canvas.getContext('2d');
 
+      // Deep Slate Gradient Background
       const bgGrad = ctx.createLinearGradient(0, 0, 512, 512);
       bgGrad.addColorStop(0, '#1e293b');
       bgGrad.addColorStop(1, '#090d16');
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, 512, 512);
 
-      ctx.strokeStyle = '#334155';
-      ctx.lineWidth = 22;
-      ctx.lineCap = 'round';
+      // Subtle Outer Dial Ring
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.16)';
+      ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(256, 275, 165, Math.PI * 0.8, Math.PI * 2.2);
+      ctx.arc(256, 268, 198, 0, Math.PI * 2);
       ctx.stroke();
 
-      const arcGrad = ctx.createLinearGradient(90, 275, 420, 275);
+      // Speedometer Track Arc
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 24;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(256, 272, 162, Math.PI * 0.78, Math.PI * 2.22);
+      ctx.stroke();
+
+      // Active Glowing Speed Arc
+      const arcGrad = ctx.createLinearGradient(90, 272, 422, 272);
       arcGrad.addColorStop(0, '#38bdf8');
-      arcGrad.addColorStop(0.5, '#f97316');
+      arcGrad.addColorStop(0.55, '#f97316');
       arcGrad.addColorStop(1, '#fb923c');
       ctx.strokeStyle = arcGrad;
       ctx.beginPath();
-      ctx.arc(256, 275, 165, Math.PI * 0.8, Math.PI * 1.85);
+      ctx.arc(256, 272, 162, Math.PI * 0.78, Math.PI * 1.88);
       ctx.stroke();
 
-      const bars = [55, 95, 140, 110, 70];
+      // Radial Dial Tick Marks
+      for (let i = 0; i <= 10; i++) {
+        const angle = Math.PI * 0.78 + (i / 10) * (Math.PI * 1.44);
+        const rInner = i % 2 === 0 ? 124 : 132;
+        const rOuter = 142;
+        ctx.strokeStyle = i <= 7 ? 'rgba(248, 250, 252, 0.65)' : 'rgba(148, 163, 184, 0.35)';
+        ctx.lineWidth = i % 2 === 0 ? 5 : 3;
+        ctx.beginPath();
+        ctx.moveTo(256 + Math.cos(angle) * rInner, 272 + Math.sin(angle) * rInner);
+        ctx.lineTo(256 + Math.cos(angle) * rOuter, 272 + Math.sin(angle) * rOuter);
+        ctx.stroke();
+      }
+
+      // Rising Volume Equalizer Bars
+      const bars = [52, 88, 134, 108, 68];
       const barWidth = 22;
       const gap = 14;
       const startX = 256 - ((bars.length * barWidth + (bars.length - 1) * gap) / 2);
       bars.forEach((h, i) => {
         ctx.fillStyle = i >= 2 ? '#f97316' : '#38bdf8';
         ctx.beginPath();
-        ctx.roundRect(startX + i * (barWidth + gap), 330 - h, barWidth, h, 8);
+        ctx.roundRect(startX + i * (barWidth + gap), 336 - h, barWidth, h, 8);
         ctx.fill();
       });
 
