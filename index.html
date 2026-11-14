@@ -580,7 +580,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.5)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.6)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="unitBtn" class="pill">km/h</button>
@@ -1032,8 +1032,8 @@
   function startDemoSynth() {
     initAudioEngine();
     if (isTrackPlaying) {
+      stopBufferPlayback();
       audioEl.pause();
-      bgAudioEl.pause();
       isTrackPlaying = false;
     }
 
@@ -1489,14 +1489,12 @@
     currentTrackIndex = (index + playlist.length) % playlist.length;
     const track = playlist[currentTrackIndex];
     originalTrackUrl = track.url;
+    bufferPauseOffset = 0;
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
     renderPlaylist();
 
     audioEl.muted = false;
     audioEl.src = track.url;
-    audioEl.load();
-
-    preDecodeTrackForLockScreen(track.url);
 
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -1512,6 +1510,50 @@
 
     if (autoplay) {
       playCurrentTrack();
+    }
+  }
+
+  function playCurrentTrack() {
+    if (!playlist.length) {
+      startDemoSynth();
+      return;
+    }
+    if (synthPlaying) stopDemoSynth();
+    initAudioEngine();
+    refreshCurrentVolume();
+
+    const track = playlist[currentTrackIndex];
+    if (!track) return;
+
+    if (!audioEl.src || audioEl.src === window.location.href) {
+      audioEl.src = track.url;
+    }
+
+    const startOffset = audioEl.currentTime || bufferPauseOffset || 0;
+    playBtn.textContent = '⏳';
+
+    const playPromise = audioEl.play();
+    if (playPromise !== undefined) {
+      playPromise.then(() => {
+        isTrackPlaying = true;
+        playBtn.textContent = '⏸';
+        renderPlaylist();
+
+        preDecodeTrackForLockScreen(track.url);
+
+        if (!document.hidden && cachedDecodedBuffer && cachedDecodedTrackUrl === track.url) {
+          if (startBufferPlaybackAt(audioEl.currentTime || startOffset)) {
+            audioEl.muted = true;
+          }
+        } else {
+          audioEl.muted = false;
+        }
+      }).catch((err) => {
+        isTrackPlaying = false;
+        playBtn.textContent = '▶';
+        showToast(`Play blocked: ${err.message || 'Tap Play again'}`);
+        console.warn('Playback error:', err);
+      });
     }
   }
 
