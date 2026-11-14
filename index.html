@@ -715,7 +715,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.1)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.2)</span></span>
       </div>
       <div style="display:flex; gap:5px;">
         <button id="rideLockBtn" class="pill" title="OLED Pocket Lock">🔒 Lock</button>
@@ -781,7 +781,8 @@
         <div id="playlistList"></div>
       </div>
 
-      <audio id="audioEl" playsinline preload="none" crossorigin="anonymous"></audio>
+      <audio id="audioEl" playsinline preload="auto" crossorigin="anonymous"></audio>
+      <audio id="preloadAudioEl" playsinline preload="auto" muted></audio>
       <audio id="bgAudioEl" playsinline preload="none"></audio>
     </div>
 
@@ -908,6 +909,7 @@
 
   // --- DOM REFERENCES ---
   const audioEl = document.getElementById('audioEl');
+  const preloadAudioEl = document.getElementById('preloadAudioEl');
   const bgAudioEl = document.getElementById('bgAudioEl');
   const playBtn = document.getElementById('playBtn');
   const nextBtn = document.getElementById('nextBtn');
@@ -1230,12 +1232,25 @@
     isUsingBgAudio = false;
     audioEl.crossOrigin = 'anonymous';
     audioEl.src = track.url;
+    audioEl.load();
     playBtn.textContent = '▶';
     updateMediaSession(track);
     renderPlaylist();
+    prewarmNextTrack();
 
     if (autoPlay) {
       playCurrentTrack();
+    }
+  }
+
+  // Pre-warm the next track in the queue so pressing Next starts near-instantly
+  function prewarmNextTrack() {
+    if (playlist.length <= 1) return;
+    const nextIdx = (currentTrackIndex + 1) % playlist.length;
+    const nextTrack = playlist[nextIdx];
+    if (nextTrack && nextTrack.url && preloadAudioEl.src !== nextTrack.url) {
+      preloadAudioEl.src = nextTrack.url;
+      preloadAudioEl.load();
     }
   }
 
@@ -1298,6 +1313,11 @@
     bgAudioEl.pause();
     isUsingBgAudio = false;
 
+    // Immediate optimistic UI response on tap
+    isTrackPlaying = true;
+    playBtn.textContent = '⏳';
+    renderPlaylist();
+
     const playPromise = audioEl.play();
     if (playPromise !== undefined) {
       playPromise.then(() => {
@@ -1305,16 +1325,13 @@
         playBtn.textContent = '⏸';
         updateMediaSession(track);
         renderPlaylist();
+        prewarmNextTrack();
 
         if (startOffset > 0 && audioEl.readyState >= 1) {
           try {
             audioEl.currentTime = startOffset;
           } catch (e) {}
         }
-
-        // Pre-load background player URL (unmuted, paused) so lock-screen switch is ready without dual-stream interference
-        bgAudioEl.src = activeScaledBlobUrl || track.url;
-        bgAudioEl.load();
 
         preDecodeTrackForLockScreen(track.url, track.file || null);
       }).catch((err) => {
@@ -1325,19 +1342,28 @@
             isTrackPlaying = true;
             playBtn.textContent = '⏸';
             renderPlaylist();
+            prewarmNextTrack();
           }).catch(() => {
             isTrackPlaying = false;
             playBtn.textContent = '▶';
+            renderPlaylist();
             showToast('Unable to play track — tap Play again');
           });
         } else {
           isTrackPlaying = false;
           playBtn.textContent = '▶';
+          renderPlaylist();
           showToast('Playback blocked: ' + (err?.message || 'Tap Play'));
         }
       });
     }
   }
+
+  audioEl.addEventListener('playing', () => {
+    if (isTrackPlaying) {
+      playBtn.textContent = '⏸';
+    }
+  });
 
   function pauseCurrentTrack() {
     stopBufferPlayback();
@@ -1607,10 +1633,15 @@
         throw new Error('No MP3 files found in this Archive item');
       }
 
+      // Resolve direct storage server (meta.d1 + meta.dir) to avoid 302 redirect lag on Play/Next
+      const directHost = meta.d1 && meta.dir ? `https://${meta.d1}${meta.dir}` : null;
+
       const wasEmpty = playlist.length === 0;
       audioFiles.forEach((f) => {
         const encodedPath = f.name.split('/').map(encodeURIComponent).join('/');
-        const streamUrl = `https://archive.org/download/${encodeURIComponent(identifier)}/${encodedPath}`;
+        const streamUrl = directHost
+          ? `${directHost}/${encodedPath}`
+          : `https://archive.org/download/${encodeURIComponent(identifier)}/${encodedPath}`;
         const displayTitle = (f.title || f.name.split('/').pop()).replace(/\.[^/.]+$/, '');
         playlist.push({ name: displayTitle, url: streamUrl, isCloud: true });
       });
