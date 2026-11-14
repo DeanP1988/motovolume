@@ -580,7 +580,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume</span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v0.8)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="unitBtn" class="pill">km/h</button>
@@ -645,7 +645,7 @@
         <div id="playlistList"></div>
       </div>
 
-      <audio id="audioEl" playsinline crossorigin="anonymous"></audio>
+      <audio id="audioEl" playsinline preload="auto"></audio>
     </div>
 
     <!-- Speed -> Volume Curve + Live Graph -->
@@ -867,25 +867,31 @@
   }
 
   // Seamless handoff when locking screen or switching apps so iOS hardware plays uninterrupted
+  // Because audioEl stays continuously playing (just muted while Web Audio buffer is active),
+  // unmuting it on lock requires NO new play() gesture and iOS never silences the Lock Screen!
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      // Going to background / Lock Screen: hand off from Web Audio buffer to native <audio>
       if (isUsingWebAudioBuffer && audioCtx) {
         const elapsed = Math.max(0, audioCtx.currentTime - bufferStartTime);
         stopBufferPlayback();
-        audioEl.currentTime = elapsed;
-        audioEl.muted = false;
+        if (Math.abs(audioEl.currentTime - elapsed) > 0.35) {
+          audioEl.currentTime = elapsed;
+        }
+      }
+      audioEl.muted = false;
+      if (audioEl.paused && playlist.length > 0 && playBtn.textContent === '⏸') {
         audioEl.play().catch(() => {});
       }
     } else {
-      // Returning to foreground: hand back from native <audio> to Web Audio speed-gain buffer
       if (watchId !== null) requestWakeLock();
       if (!audioEl.paused && decodedAudioBuffer && !synthPlaying) {
         const currentPos = audioEl.currentTime;
-        audioEl.pause();
+        audioEl.muted = true;
         initAudioEngine();
         startBufferPlayback(currentPos);
         applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
+      } else {
+        audioEl.muted = false;
       }
     }
   });
@@ -1376,20 +1382,34 @@
     stopSynth();
     currentTrackIndex = (index + playlist.length) % playlist.length;
     const track = playlist[currentTrackIndex];
+    audioEl.muted = false;
     audioEl.src = track.url;
+    audioEl.load();
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
     updateMediaSession(track.name);
+    renderPlaylist();
 
     if (autoplay) {
-      initAudioEngine();
-      audioEl.play().then(() => {
+      // Always start native <audio> directly on user tap so iOS locks in an active background media session
+      audioEl.play().then(async () => {
         playBtn.textContent = '⏸';
         renderPlaylist();
+
+        if (!document.hidden) {
+          await decodeTrackBuffer(track);
+          if (decodedAudioBuffer && !audioEl.paused && !document.hidden) {
+            const pos = audioEl.currentTime;
+            // Mute native <audio> (keep it running in sync!) while Web Audio buffer controls speed-gain
+            audioEl.muted = true;
+            startBufferPlayback(pos);
+            applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
+          }
+        }
       }).catch(() => {
         showToast('Tap Play to start audio');
       });
     } else {
-      renderPlaylist();
+      decodeTrackBuffer(track);
     }
   }
 
@@ -1506,13 +1526,17 @@
         bufferPauseOffset = audioEl.currentTime;
         audioEl.pause();
       }
+      audioEl.muted = false;
       playBtn.textContent = '▶';
     } else {
+      audioEl.currentTime = bufferPauseOffset;
       if (!document.hidden && decodedAudioBuffer) {
+        audioEl.muted = true;
+        await audioEl.play().catch(() => {});
         startBufferPlayback(bufferPauseOffset);
         applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
       } else {
-        audioEl.currentTime = bufferPauseOffset;
+        audioEl.muted = false;
         await audioEl.play().catch(() => {});
       }
       playBtn.textContent = '⏸';
