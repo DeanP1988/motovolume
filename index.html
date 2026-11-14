@@ -588,13 +588,15 @@
       display: flex;
     }
     .ride-lock-overlay.stealth-black .ride-lock-status,
+    .ride-lock-overlay.stealth-black .stealth-toggle-btn,
     .ride-lock-overlay.stealth-black .ride-lock-telemetry,
     .ride-lock-overlay.stealth-black .slide-unlock-track,
     .ride-lock-overlay.stealth-black .ride-lock-hint {
-      opacity: 0.04;
-      transition: opacity 0.4s ease;
+      opacity: 0;
+      transition: opacity 0.35s ease;
     }
     .ride-lock-overlay.stealth-black.peeking .ride-lock-status,
+    .ride-lock-overlay.stealth-black.peeking .stealth-toggle-btn,
     .ride-lock-overlay.stealth-black.peeking .ride-lock-telemetry,
     .ride-lock-overlay.stealth-black.peeking .slide-unlock-track,
     .ride-lock-overlay.stealth-black.peeking .ride-lock-hint {
@@ -753,7 +755,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.5)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.6)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="rideLockBtn" class="pill" title="OLED Pocket Lock">🔒 Lock</button>
@@ -1929,18 +1931,18 @@
     e.stopPropagation();
     isStealthBlack = !isStealthBlack;
     stealthBlackBtn.classList.toggle('active', isStealthBlack);
+    stealthBlackBtn.textContent = isStealthBlack ? '🌑 Pure Black: ON' : '🌑 Pure Black';
+    clearTimeout(peekTimer);
+    rideLockOverlay.classList.remove('peeking');
     rideLockOverlay.classList.toggle('stealth-black', isStealthBlack);
-    if (isStealthBlack) {
-      triggerStealthPeek();
-    } else {
-      rideLockOverlay.classList.remove('peeking');
-    }
   });
 
-  rideLockOverlay.addEventListener('touchstart', () => {
+  rideLockOverlay.addEventListener('touchstart', (e) => {
+    if (e.target.closest('#stealthBlackBtn')) return;
     triggerStealthPeek();
   }, { passive: true });
-  rideLockOverlay.addEventListener('mousedown', () => {
+  rideLockOverlay.addEventListener('mousedown', (e) => {
+    if (e.target.closest('#stealthBlackBtn')) return;
     triggerStealthPeek();
   });
 
