@@ -5,7 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="SpeedVolume" />
   <title>SpeedVolume Player</title>
+  <link id="appleTouchIcon" rel="apple-touch-icon" sizes="180x180" href="" />
+  <link id="appFavicon" rel="icon" type="image/png" href="" />
+  <link id="dynamicManifest" rel="manifest" href="" />
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
@@ -217,6 +221,121 @@
       text-align: center;
       color: var(--text);
     }
+
+    /* Playlist Drawer Styles */
+    .playlist-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      margin-top: 12px;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .playlist-toggle:hover {
+      border-color: #475569;
+      color: var(--text);
+    }
+    .playlist-drawer {
+      display: none;
+      margin-top: 8px;
+      max-height: 190px;
+      overflow-y: auto;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 4px;
+    }
+    .playlist-drawer.open {
+      display: block;
+    }
+    .playlist-empty {
+      padding: 14px 10px;
+      text-align: center;
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+    .playlist-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .playlist-item:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .playlist-item.active {
+      background: var(--accent-soft);
+    }
+    .playlist-item-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .playlist-item-num {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--muted);
+      width: 18px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+    .playlist-item.active .playlist-item-num,
+    .playlist-item.active .playlist-item-title {
+      color: var(--accent);
+    }
+    .playlist-item-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .playlist-del-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 0.8rem;
+      padding: 4px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .playlist-del-btn:hover {
+      color: #ef4444;
+      background: rgba(239, 68, 68, 0.12);
+    }
+    .playlist-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 6px 6px 2px;
+      border-top: 1px solid var(--border);
+      margin-top: 4px;
+    }
+    .clear-queue-btn {
+      background: transparent;
+      border: none;
+      color: #ef4444;
+      font-size: 0.72rem;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 4px 6px;
+    }
+
     .transport {
       display: flex;
       justify-content: center;
@@ -442,6 +561,16 @@
         <button class="ctrl play" id="playBtn" title="Play / Pause">▶</button>
         <button class="ctrl" id="nextBtn" title="Next">⏭</button>
       </div>
+
+      <!-- Collapsible Playlist Queue -->
+      <button id="playlistToggleBtn" class="playlist-toggle" type="button">
+        <span id="playlistCountLabel">Playlist Queue (0 tracks)</span>
+        <span id="playlistChevron">▼</span>
+      </button>
+      <div id="playlistDrawer" class="playlist-drawer">
+        <div id="playlistList"></div>
+      </div>
+
       <audio id="audioEl" playsinline crossorigin="anonymous"></audio>
     </div>
 
@@ -553,6 +682,86 @@
   let synthNodes = null;
   let toastTimeout = null;
 
+  // --- INDEXEDDB OFFLINE MP3 STORAGE ---
+  const DB_NAME = 'SpeedVolumeDB';
+  const STORE_NAME = 'tracks';
+
+  function openTrackDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function saveTrackToDB(name, fileBlob) {
+    try {
+      const db = await openTrackDB();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.add({ name, file: fileBlob });
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    } catch (e) {
+      console.warn('Could not persist track to IndexedDB:', e);
+      return null;
+    }
+  }
+
+  async function deleteTrackFromDB(id) {
+    if (id == null) return;
+    try {
+      const db = await openTrackDB();
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).delete(id);
+    } catch (e) {
+      console.warn('Failed to delete track from DB:', e);
+    }
+  }
+
+  async function clearTracksDB() {
+    try {
+      const db = await openTrackDB();
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).clear();
+    } catch (e) {
+      console.warn('Failed to clear DB:', e);
+    }
+  }
+
+  async function restoreSavedPlaylist() {
+    try {
+      const db = await openTrackDB();
+      const saved = await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const req = tx.objectStore(STORE_NAME).getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+
+      if (saved.length > 0) {
+        playlist = saved.map((item) => ({
+          id: item.id,
+          name: item.name,
+          url: URL.createObjectURL(item.file)
+        }));
+        currentTrackIndex = 0;
+        loadTrack(0, false);
+        showToast(`Restored ${playlist.length} saved track${playlist.length > 1 ? 's' : ''}`);
+      }
+    } catch (e) {
+      console.warn('Could not restore saved tracks:', e);
+    }
+  }
+
   // --- DOM REFERENCES ---
   const audioEl = document.getElementById('audioEl');
   const playBtn = document.getElementById('playBtn');
@@ -561,6 +770,11 @@
   const fileInput = document.getElementById('fileInput');
   const demoSynthBtn = document.getElementById('demoSynthBtn');
   const trackNameEl = document.getElementById('trackName');
+  const playlistToggleBtn = document.getElementById('playlistToggleBtn');
+  const playlistCountLabel = document.getElementById('playlistCountLabel');
+  const playlistChevron = document.getElementById('playlistChevron');
+  const playlistDrawer = document.getElementById('playlistDrawer');
+  const playlistList = document.getElementById('playlistList');
 
   const speedDisplay = document.getElementById('speedDisplay');
   const speedUnitLabel = document.getElementById('speedUnitLabel');
@@ -992,17 +1206,134 @@
   }
 
   // --- MP3 PLAYLIST & TRANSPORT ---
-  fileInput.addEventListener('change', (e) => {
+  function renderPlaylist() {
+    playlistCountLabel.textContent = `Playlist Queue (${playlist.length} track${playlist.length === 1 ? '' : 's'})`;
+    playlistList.innerHTML = '';
+
+    if (!playlist.length) {
+      playlistList.innerHTML = `<div class="playlist-empty">No MP3s uploaded yet. Tap "+ Load MP3s" above to add songs.</div>`;
+      return;
+    }
+
+    playlist.forEach((track, idx) => {
+      const isCurrent = idx === currentTrackIndex && !isSynthActive;
+      const row = document.createElement('div');
+      row.className = `playlist-item ${isCurrent ? 'active' : ''}`;
+      row.innerHTML = `
+        <div class="playlist-item-info">
+          <span class="playlist-item-num">${isCurrent && !audioEl.paused ? '▶' : idx + 1}</span>
+          <span class="playlist-item-title">${track.name}</span>
+        </div>
+        <button class="playlist-del-btn" data-remove="${idx}" title="Remove track">✕</button>
+      `;
+
+      // Tap row to jump straight to that song
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.playlist-del-btn')) return;
+        loadTrack(idx, true);
+      });
+
+      playlistList.appendChild(row);
+    });
+
+    // Clear all button at bottom of drawer
+    const footer = document.createElement('div');
+    footer.className = 'playlist-footer';
+    footer.innerHTML = `<button class="clear-queue-btn" id="clearQueueBtn">Clear All</button>`;
+    playlistList.appendChild(footer);
+
+    footer.querySelector('#clearQueueBtn').addEventListener('click', async () => {
+      playlist.forEach((t) => URL.revokeObjectURL(t.url));
+      playlist = [];
+      currentTrackIndex = 0;
+      await clearTracksDB();
+      if (!isSynthActive) {
+        audioEl.pause();
+        audioEl.removeAttribute('src');
+        playBtn.textContent = '▶';
+        trackNameEl.textContent = 'Tap "Test Synth" or load local MP3s';
+      }
+      renderPlaylist();
+      showToast('Saved playlist cleared');
+    });
+
+    // Individual track remove handlers
+    playlistList.querySelectorAll('.playlist-del-btn').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const removeIdx = parseInt(btn.dataset.remove, 10);
+        const wasPlaying = !audioEl.paused && !isSynthActive;
+        const removedTrack = playlist[removeIdx];
+        URL.revokeObjectURL(removedTrack.url);
+        await deleteTrackFromDB(removedTrack.id);
+        playlist.splice(removeIdx, 1);
+
+        if (!playlist.length) {
+          currentTrackIndex = 0;
+          if (!isSynthActive) {
+            audioEl.pause();
+            audioEl.removeAttribute('src');
+            playBtn.textContent = '▶';
+            trackNameEl.textContent = 'Tap "Test Synth" or load local MP3s';
+          }
+        } else if (removeIdx === currentTrackIndex) {
+          currentTrackIndex = removeIdx % playlist.length;
+          loadTrack(currentTrackIndex, wasPlaying);
+        } else if (removeIdx < currentTrackIndex) {
+          currentTrackIndex--;
+          const curr = playlist[currentTrackIndex];
+          trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${curr.name}`;
+        } else {
+          const curr = playlist[currentTrackIndex];
+          trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${curr.name}`;
+        }
+
+        renderPlaylist();
+      });
+    });
+  }
+
+  playlistToggleBtn.addEventListener('click', () => {
+    const isOpen = playlistDrawer.classList.toggle('open');
+    playlistChevron.textContent = isOpen ? '▲' : '▼';
+  });
+
+  fileInput.addEventListener('change', async (e) => {
     const files = Array.from(e.target.files);
     if (!files.length) return;
-    stopDemoSynth(true);
-    playlist = files.map((file) => ({
-      name: file.name.replace(/\.[^/.]+$/, ''),
-      url: URL.createObjectURL(file)
-    }));
-    currentTrackIndex = 0;
-    loadTrack(0, true);
-    showToast(`Loaded ${playlist.length} track${playlist.length > 1 ? 's' : ''}`);
+    const wasEmpty = playlist.length === 0;
+
+    const newTracks = [];
+    for (const file of files) {
+      const cleanName = file.name.replace(/\.[^/.]+$/, '');
+      const dbId = await saveTrackToDB(cleanName, file);
+      newTracks.push({
+        id: dbId,
+        name: cleanName,
+        url: URL.createObjectURL(file)
+      });
+    }
+
+    playlist = playlist.concat(newTracks);
+
+    // Automatically open the playlist drawer so you can see your uploaded tracks
+    playlistDrawer.classList.add('open');
+    playlistChevron.textContent = '▲';
+
+    if (wasEmpty) {
+      stopDemoSynth(true);
+      currentTrackIndex = 0;
+      loadTrack(0, true);
+    } else {
+      const curr = playlist[currentTrackIndex];
+      if (!isSynthActive && curr) {
+        trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${curr.name}`;
+      }
+      renderPlaylist();
+    }
+
+    fileInput.value = '';
+    showToast(`Saved ${newTracks.length} track${newTracks.length > 1 ? 's' : ''} offline`);
   });
 
   function loadTrack(index, autoplay = false) {
@@ -1012,6 +1343,7 @@
     const track = playlist[currentTrackIndex];
     audioEl.src = track.url;
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
+    renderPlaylist();
 
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -1026,6 +1358,7 @@
       initAudioEngine();
       audioEl.play().then(() => {
         playBtn.textContent = '⏸';
+        renderPlaylist();
         refreshCurrentVolume();
       }).catch((err) => {
         console.warn('Playback blocked:', err);
@@ -1039,15 +1372,18 @@
     } else {
       startDemoSynth();
     }
+    renderPlaylist();
   });
 
   playBtn.addEventListener('click', () => {
     if (isSynthActive) {
       stopDemoSynth();
+      renderPlaylist();
       return;
     }
     if (!playlist.length) {
       startDemoSynth();
+      renderPlaylist();
       return;
     }
     initAudioEngine();
@@ -1059,6 +1395,7 @@
       audioEl.pause();
       playBtn.textContent = '▶';
     }
+    renderPlaylist();
   });
 
   nextBtn.addEventListener('click', () => {
@@ -1183,8 +1520,115 @@
   unitBtn.textContent = unit === 'kmh' ? 'km/h' : 'mph';
   speedUnitLabel.textContent = `Speed (${unit === 'kmh' ? 'km/h' : 'mph'})`;
   simSpeedLabel.textContent = `${simSlider.value} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
+  renderPlaylist();
   renderIntervals();
   refreshCurrentVolume();
+  restoreSavedPlaylist();
+
+  // --- GENERATE CUSTOM IOS HOME SCREEN ICON & MANIFEST ---
+  function generateAppIconAndManifest() {
+    const size = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Deep slate gradient background matching app theme (#0f172a -> #1e293b)
+    const bgGrad = ctx.createLinearGradient(0, 0, size, size);
+    bgGrad.addColorStop(0, '#1e293b');
+    bgGrad.addColorStop(1, '#090d16');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, size, size);
+
+    // Subtle radial orange glow behind dial
+    const glow = ctx.createRadialGradient(256, 265, 20, 256, 265, 220);
+    glow.addColorStop(0, 'rgba(249, 115, 22, 0.25)');
+    glow.addColorStop(1, 'rgba(249, 115, 22, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, size, size);
+
+    const cx = 256;
+    const cy = 278;
+    const radius = 158;
+    const startAngle = (135 * Math.PI) / 180;
+    const endAngle = (405 * Math.PI) / 180;
+    const activeAngle = (345 * Math.PI) / 180;
+
+    // Speedometer background track arc
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 28;
+    ctx.strokeStyle = '#334155';
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, startAngle, endAngle);
+    ctx.stroke();
+
+    // Active orange-to-sky speed arc
+    const arcGrad = ctx.createLinearGradient(90, 350, 420, 150);
+    arcGrad.addColorStop(0, '#f97316');
+    arcGrad.addColorStop(0.75, '#fb923c');
+    arcGrad.addColorStop(1, '#38bdf8');
+    ctx.strokeStyle = arcGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, startAngle, activeAngle);
+    ctx.stroke();
+
+    // Tick marks inside dial
+    for (let i = 0; i <= 8; i++) {
+      const a = startAngle + (i / 8) * (endAngle - startAngle);
+      const innerR = radius - 34;
+      const outerR = radius - 22;
+      ctx.lineWidth = i % 2 === 0 ? 5 : 3;
+      ctx.strokeStyle = i <= 6 ? '#f8fafc' : '#64748b';
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * innerR, cy + Math.sin(a) * innerR);
+      ctx.lineTo(cx + Math.cos(a) * outerR, cy + Math.sin(a) * outerR);
+      ctx.stroke();
+    }
+
+    // Rising equalizer / volume bars in the center of the dial
+    const bars = [
+      { x: -54, h: 42, color: '#f97316' },
+      { x: -18, h: 74, color: '#fb923c' },
+      { x: 18,  h: 108, color: '#f97316' },
+      { x: 54,  h: 136, color: '#38bdf8' }
+    ];
+    bars.forEach((b) => {
+      const barW = 22;
+      const bx = cx + b.x - barW / 2;
+      const by = cy + 56 - b.h;
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, barW, b.h, 11);
+      ctx.fill();
+    });
+
+    // Export high-res PNG for iOS apple-touch-icon & manifest
+    const iconDataUrl = canvas.toDataURL('image/png');
+    document.getElementById('appleTouchIcon').href = iconDataUrl;
+    document.getElementById('appFavicon').href = iconDataUrl;
+
+    const manifestObj = {
+      name: 'SpeedVolume Player',
+      short_name: 'SpeedVolume',
+      start_url: '.',
+      display: 'standalone',
+      background_color: '#0f172a',
+      theme_color: '#0f172a',
+      icons: [
+        {
+          src: iconDataUrl,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any maskable'
+        }
+      ]
+    };
+
+    const manifestBlob = new Blob([JSON.stringify(manifestObj)], { type: 'application/json' });
+    document.getElementById('dynamicManifest').href = URL.createObjectURL(manifestBlob);
+  }
+
+  generateAppIconAndManifest();
 </script>
 </body>
 </html>
