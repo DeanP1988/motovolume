@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>SpeedVolume Player</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --accent: #f97316;
+      --accent-soft: rgba(249, 115, 22, 0.16);
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --border: #334155;
+      --green: #22c55e;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) 0;
+    }
+
+    /* Clean Centered Mobile App Container (No Hardware Bezel) */
+    .app-shell {
+      width: 100%;
+      max-width: 430px;
+      min-height: 100vh;
+      background: var(--bg);
+      padding: 12px 16px 32px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* App UI Styles */
+    .app-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0 14px;
+    }
+    .app-title {
+      font-size: 1.2rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pill {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 6px 11px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .pill:hover {
+      border-color: #475569;
+      color: var(--text);
+    }
+    .pill.active {
+      border-color: var(--green);
+      color: var(--green);
+      background: rgba(34, 197, 94, 0.1);
+    }
+
+    /* Telemetry Cards */
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px 10px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .stat-val {
+      font-size: 2.35rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.05;
+      color: var(--text);
+    }
+    .stat-val.accent {
+      color: var(--accent);
+    }
+    .stat-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-top: 5px;
+    }
+
+    /* Live Gain Meter Bar inside Volume Card */
+    .gain-bar-bg {
+      height: 4px;
+      width: 76%;
+      margin: 8px auto 0;
+      background: var(--bg);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .gain-bar-fill {
+      height: 100%;
+      width: 35%;
+      background: var(--accent);
+      border-radius: 999px;
+      transition: width 0.08s linear;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .card-title {
+      font-size: 0.76rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Audio Source Buttons */
+    .source-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .file-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 10px 8px;
+      background: var(--accent-soft);
+      border: 1px dashed var(--accent);
+      color: var(--accent);
+      border-radius: 11px;
+      font-weight: 600;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .file-btn:hover {
+      background: rgba(249, 115, 22, 0.24);
+    }
+    .demo-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 10px 8px;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      color: #38bdf8;
+      border-radius: 11px;
+      font-weight: 600;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .demo-btn.active {
+      background: #0284c7;
+      color: #fff;
+      border-color: #38bdf8;
+    }
+    input[type="file"] {
+      display: none;
+    }
+
+    .track-name {
+      font-size: 0.86rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 10px;
+      text-align: center;
+      color: var(--text);
+    }
+    .transport {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 18px;
+    }
+    button.ctrl {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      font-size: 0.95rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.1s;
+    }
+    button.ctrl:active {
+      transform: scale(0.93);
+    }
+    button.ctrl.play {
+      width: 54px;
+      height: 54px;
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      font-size: 1.15rem;
+      box-shadow: 0 6px 18px rgba(249, 115, 22, 0.35);
+    }
+
+    /* SVG Curve Graph Container */
+    .graph-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px 8px 4px;
+      margin-bottom: 12px;
+    }
+
+    /* Speed Intervals */
+    .interval-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 36px;
+      gap: 7px;
+      align-items: center;
+      margin-bottom: 7px;
+    }
+    .input-group {
+      display: flex;
+      align-items: center;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 7px 10px;
+    }
+    .input-group:focus-within {
+      border-color: var(--accent);
+    }
+    .input-group input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      font-size: 0.94rem;
+      font-weight: 700;
+      outline: none;
+      font-variant-numeric: tabular-nums;
+    }
+    .input-group span {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-left: 4px;
+      white-space: nowrap;
+    }
+    .del-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 10px;
+      height: 36px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .del-btn:hover:not(:disabled) {
+      border-color: #ef4444;
+      color: #ef4444;
+    }
+    .del-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .add-btn {
+      width: 100%;
+      padding: 9px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 10px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      margin-top: 2px;
+      cursor: pointer;
+    }
+    .add-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Custom Range Sliders */
+    .slider-row {
+      margin-top: 10px;
+    }
+    .slider-row label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 6px;
+      background: var(--bg);
+      border-radius: 999px;
+      outline: none;
+      border: 1px solid var(--border);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    }
+
+    .gps-status {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-align: center;
+      margin-top: 8px;
+      line-height: 1.35;
+    }
+
+    /* Floating Toast Notification */
+    .app-toast {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-20px);
+      background: rgba(30, 41, 59, 0.96);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: 999px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.25s ease;
+      z-index: 40;
+      white-space: nowrap;
+    }
+    .app-toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Toast Feedback -->
+  <div id="iosToast" class="app-toast">Simulator active</div>
+
+  <!-- Clean Mobile-Formatted App Container -->
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="app-title">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
+        <span>SpeedVolume</span>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button id="unitBtn" class="pill">km/h</button>
+        <button id="gpsBtn" class="pill">Start GPS</button>
+      </div>
+    </header>
+
+    <!-- Telemetry Dashboard -->
+    <div class="dashboard">
+      <div class="stat-card">
+        <div id="speedDisplay" class="stat-val">0</div>
+        <div id="speedUnitLabel" class="stat-label">Speed (km/h)</div>
+      </div>
+      <div class="stat-card">
+        <div id="volDisplay" class="stat-val accent">35%</div>
+        <div class="stat-label">Target Volume</div>
+        <div class="gain-bar-bg">
+          <div id="gainBarFill" class="gain-bar-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MP3 Player & Built-in Synth Test Tone -->
+    <div class="card">
+      <div class="source-grid">
+        <label class="file-btn">
+          <span>+ Load MP3s</span>
+          <input type="file" id="fileInput" accept="audio/*" multiple />
+        </label>
+        <button id="demoSynthBtn" class="demo-btn">
+          <span>♫ Test Synth</span>
+        </button>
+      </div>
+      <div id="trackName" class="track-name">Tap "Test Synth" or load local MP3s</div>
+      <div class="transport">
+        <button class="ctrl" id="prevBtn" title="Previous">⏮</button>
+        <button class="ctrl play" id="playBtn" title="Play / Pause">▶</button>
+        <button class="ctrl" id="nextBtn" title="Next">⏭</button>
+      </div>
+      <audio id="audioEl" playsinline crossorigin="anonymous"></audio>
+    </div>
+
+    <!-- Speed -> Volume Curve + Live Graph -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Speed → Volume Curve</span>
+        <span style="font-size:0.72rem; color:var(--accent); font-weight:600;">Live Interpolation</span>
+      </div>
+
+      <!-- Interactive SVG Curve Visualizer -->
+      <div class="graph-box">
+        <svg id="curveSvg" viewBox="0 0 320 120" width="100%" height="115" style="display:block; overflow:visible;">
+          <defs>
+            <linearGradient id="curveGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#f97316" stop-opacity="0.35"/>
+              <stop offset="100%" stop-color="#f97316" stop-opacity="0.0"/>
+            </linearGradient>
+          </defs>
+          <!-- Grid lines -->
+          <line x1="28" y1="12" x2="310" y2="12" stroke="#1e293b" stroke-width="1" />
+          <line x1="28" y1="54" x2="310" y2="54" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3" />
+          <line x1="28" y1="96" x2="310" y2="96" stroke="#334155" stroke-width="1" />
+          <!-- Y-axis labels -->
+          <text x="23" y="15" fill="#64748b" font-size="8" text-anchor="end">100%</text>
+          <text x="23" y="57" fill="#64748b" font-size="8" text-anchor="end">50%</text>
+          <text x="23" y="99" fill="#64748b" font-size="8" text-anchor="end">0%</text>
+          <!-- X-axis labels -->
+          <text x="28" y="110" fill="#64748b" font-size="8" text-anchor="middle">0</text>
+          <text id="midAxisLabel" x="169" y="110" fill="#64748b" font-size="8" text-anchor="middle">70</text>
+          <text id="maxAxisLabel" x="310" y="110" fill="#64748b" font-size="8" text-anchor="middle">140</text>
+
+          <!-- Filled Area & Polyline -->
+          <polygon id="curveArea" fill="url(#curveGrad)" points="" />
+          <polyline id="curveLine" fill="none" stroke="#f97316" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="" />
+
+          <!-- Control Point Dots -->
+          <g id="curveNodes"></g>
+
+          <!-- Live Current Speed/Volume Marker -->
+          <line id="liveCrosshair" x1="28" y1="12" x2="28" y2="96" stroke="#38bdf8" stroke-width="1" stroke-dasharray="2 2" />
+          <circle id="liveMarker" cx="28" cy="66" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="2" />
+        </svg>
+      </div>
+
+      <div id="intervalsContainer"></div>
+      <button id="addIntervalBtn" class="add-btn">+ Add Speed Point</button>
+
+      <div class="slider-row">
+        <label>
+          <span>Smoothing Response (Time Constant)</span>
+          <span id="smoothVal" style="color:var(--text); font-weight:600;">1.5s</span>
+        </label>
+        <input type="range" id="smoothSlider" min="0.3" max="4.0" step="0.1" value="1.5" />
+      </div>
+    </div>
+
+    <!-- Desk Test Simulator -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Desk Test Simulator</span>
+        <label style="font-size:0.78rem; color:var(--accent); font-weight:600; display:flex; align-items:center; gap:5px; cursor:pointer;">
+          <input type="checkbox" id="simToggle" checked style="accent-color:var(--accent);" /> Override GPS
+        </label>
+      </div>
+      <div class="slider-row" style="margin-top:4px;">
+        <label>
+          <span>Simulated Speed</span>
+          <span id="simSpeedLabel" style="color:var(--text); font-weight:700;">0 km/h</span>
+        </label>
+        <input type="range" id="simSlider" min="0" max="140" step="1" value="0" />
+      </div>
+      <div id="gpsStatus" class="gps-status">Simulator override enabled. Drag slider to test.</div>
+    </div>
+
+    <!-- Things You Can Test Card at Bottom -->
+    <div class="card" style="margin-bottom:0; background:rgba(30,41,59,0.6);">
+      <div class="card-header" style="margin-bottom:6px;">
+        <span class="card-title">Things You Can Test</span>
+      </div>
+      <ul style="margin:0; padding-left:18px; font-size:0.78rem; color:var(--muted); line-height:1.55;">
+        <li><strong style="color:var(--text);">Play Audio:</strong> Tap <span style="color:#38bdf8; font-weight:600;">♫ Test Synth</span> for a built-in synthwave loop or <span style="color:var(--accent); font-weight:600;">+ Load MP3s</span> to pick local audio files.</li>
+        <li><strong style="color:var(--text);">Simulate Speed:</strong> Drag the <strong style="color:var(--text);">Simulated Speed</strong> bar above to watch the live graph marker glide and hear smooth volume ramping.</li>
+        <li><strong style="color:var(--text);">Customize Curve:</strong> Edit speed/volume rows or tap <strong style="color:var(--text);">+ Add Speed Point</strong> to reshape the curve.</li>
+        <li><strong style="color:var(--text);">Switch Units:</strong> Tap <strong style="color:var(--text);">km/h</strong> in the top-right to toggle <strong style="color:var(--text);">mph</strong>.</li>
+      </ul>
+    </div>
+  </main>
+
+<script>
+  // --- STATE & DEFAULTS ---
+  let unit = localStorage.getItem('sv_unit') || 'kmh';
+  let intervals = JSON.parse(localStorage.getItem('sv_intervals')) || [
+    { speed: 0, vol: 35 },
+    { speed: 30, vol: 50 },
+    { speed: 60, vol: 75 },
+    { speed: 100, vol: 100 }
+  ];
+  let smoothingSeconds = parseFloat(localStorage.getItem('sv_smooth')) || 1.5;
+
+  let playlist = [];
+  let currentTrackIndex = 0;
+  let audioCtx = null;
+  let gainNode = null;
+  let watchId = null;
+  let wakeLock = null;
+  let filteredSpeed = 0;
+  let isSynthActive = false;
+  let synthNodes = null;
+  let toastTimeout = null;
+
+  // --- DOM REFERENCES ---
+  const audioEl = document.getElementById('audioEl');
+  const playBtn = document.getElementById('playBtn');
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  const fileInput = document.getElementById('fileInput');
+  const demoSynthBtn = document.getElementById('demoSynthBtn');
+  const trackNameEl = document.getElementById('trackName');
+
+  const speedDisplay = document.getElementById('speedDisplay');
+  const speedUnitLabel = document.getElementById('speedUnitLabel');
+  const volDisplay = document.getElementById('volDisplay');
+  const gainBarFill = document.getElementById('gainBarFill');
+
+  const intervalsContainer = document.getElementById('intervalsContainer');
+  const addIntervalBtn = document.getElementById('addIntervalBtn');
+  const smoothSlider = document.getElementById('smoothSlider');
+  const smoothVal = document.getElementById('smoothVal');
+
+  const unitBtn = document.getElementById('unitBtn');
+  const gpsBtn = document.getElementById('gpsBtn');
+  const gpsStatus = document.getElementById('gpsStatus');
+  const simToggle = document.getElementById('simToggle');
+  const simSlider = document.getElementById('simSlider');
+  const simSpeedLabel = document.getElementById('simSpeedLabel');
+  const iosToast = document.getElementById('iosToast');
+
+  // SVG Graph Elements
+  const curveLine = document.getElementById('curveLine');
+  const curveArea = document.getElementById('curveArea');
+  const curveNodes = document.getElementById('curveNodes');
+  const liveCrosshair = document.getElementById('liveCrosshair');
+  const liveMarker = document.getElementById('liveMarker');
+  const midAxisLabel = document.getElementById('midAxisLabel');
+  const maxAxisLabel = document.getElementById('maxAxisLabel');
+
+  function showToast(msg) {
+    iosToast.textContent = msg;
+    iosToast.classList.add('show');
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => {
+      iosToast.classList.remove('show');
+    }, 2200);
+  }
+
+  // --- WEB AUDIO API ENGINE ---
+  function initAudioEngine() {
+    if (audioCtx) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      return;
+    }
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioContext();
+
+    const source = audioCtx.createMediaElementSource(audioEl);
+    gainNode = audioCtx.createGain();
+    gainNode.gain.setValueAtTime(0.35, audioCtx.currentTime);
+
+    source.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+  }
+
+  // Built-in Musical Synthwave / Lo-Fi Groove Loop for realistic desk testing
+  function startDemoSynth() {
+    initAudioEngine();
+    if (!audioCtx || !gainNode) return;
+
+    // Pause any playing MP3
+    if (!audioEl.paused) {
+      audioEl.pause();
+    }
+
+    stopDemoSynth(true);
+
+    const now = audioCtx.currentTime;
+
+    // Master sub-bus for the demo synth before feeding the main speed-controlled gainNode
+    const masterBus = audioCtx.createGain();
+    masterBus.gain.setValueAtTime(0.001, now);
+    masterBus.gain.exponentialRampToValueAtTime(0.32, now + 0.4); // Smooth fade-in
+    masterBus.connect(gainNode);
+
+    // Warm stereo-feel delay/echo send
+    const delay = audioCtx.createDelay(1.0);
+    delay.delayTime.setValueAtTime(0.375, now); // Dotted-eighth groove at 120 BPM
+    const delayFeedback = audioCtx.createGain();
+    delayFeedback.gain.setValueAtTime(0.32, now);
+    const delayFilter = audioCtx.createBiquadFilter();
+    delayFilter.type = 'lowpass';
+    delayFilter.frequency.setValueAtTime(1400, now);
+
+    delay.connect(delayFilter);
+    delayFilter.connect(delayFeedback);
+    delayFeedback.connect(delay);
+    delayFilter.connect(masterBus);
+
+    // Pad Filter + Slow LFO Breathing Sweep
+    const padFilter = audioCtx.createBiquadFilter();
+    padFilter.type = 'lowpass';
+    padFilter.frequency.setValueAtTime(950, now);
+    padFilter.Q.setValueAtTime(1.8, now);
+    padFilter.connect(masterBus);
+    padFilter.connect(delay);
+
+    const lfo = audioCtx.createOscillator();
+    const lfoGain = audioCtx.createGain();
+    lfo.type = 'sine';
+    lfo.frequency.setValueAtTime(0.18, now); // Slow, hypnotic filter sweep
+    lfoGain.gain.setValueAtTime(420, now);
+    lfo.connect(lfoGain);
+    lfoGain.connect(padFilter.frequency);
+    lfo.start(now);
+
+    // 4-Chord Lush Progression (Fmaj7 -> Em7 -> Dm9 -> Cmaj9) looping every 8 seconds
+    const chords = [
+      [174.61, 220.00, 261.63, 329.63], // Fmaj7
+      [164.81, 196.00, 246.94, 293.66], // Em7
+      [146.83, 174.61, 220.00, 329.63], // Dm9
+      [130.81, 196.00, 246.94, 293.66]  // Cmaj9
+    ];
+    const bassNotes = [87.31, 82.41, 73.42, 65.41]; // F2 -> E2 -> D2 -> C2
+
+    // Create 4 dual-detuned pad voices (8 oscillators total)
+    const padVoices = [];
+    for (let v = 0; v < 4; v++) {
+      const voiceGain = audioCtx.createGain();
+      voiceGain.gain.setValueAtTime(0.22, now);
+      voiceGain.connect(padFilter);
+
+      const oscA = audioCtx.createOscillator();
+      const oscB = audioCtx.createOscillator();
+      oscA.type = 'sawtooth';
+      oscB.type = 'triangle';
+      oscA.detune.setValueAtTime(-7, now);
+      oscB.detune.setValueAtTime(7, now);
+
+      oscA.frequency.setValueAtTime(chords[0][v], now);
+      oscB.frequency.setValueAtTime(chords[0][v], now);
+
+      oscA.connect(voiceGain);
+      oscB.connect(voiceGain);
+      oscA.start(now);
+      oscB.start(now);
+
+      padVoices.push({ oscA, oscB, voiceGain });
+    }
+
+    // Warm analog-style sub/pluck bassline
+    const bassFilter = audioCtx.createBiquadFilter();
+    bassFilter.type = 'lowpass';
+    bassFilter.frequency.setValueAtTime(340, now);
+    bassFilter.Q.setValueAtTime(2.5, now);
+
+    const bassGain = audioCtx.createGain();
+    bassGain.gain.setValueAtTime(0.001, now);
+
+    const bassOsc = audioCtx.createOscillator();
+    bassOsc.type = 'sawtooth';
+    bassOsc.frequency.setValueAtTime(bassNotes[0], now);
+
+    bassOsc.connect(bassFilter);
+    bassFilter.connect(bassGain);
+    bassGain.connect(masterBus);
+    bassOsc.start(now);
+
+    // Step sequencer loop (8th-note groove at 120 BPM = 250ms per step)
+    let step = 0;
+    const stepMs = 250;
+    const triggerStep = () => {
+      if (!audioCtx || !isSynthActive) return;
+      const t = audioCtx.currentTime;
+      const chordIdx = Math.floor(step / 8) % chords.length;
+      const barStep = step % 8;
+
+      // Smoothly glide chord voicings at the start of each bar
+      if (barStep === 0) {
+        const targetChord = chords[chordIdx];
+        padVoices.forEach((voice, i) => {
+          voice.oscA.frequency.setTargetAtTime(targetChord[i], t, 0.08);
+          voice.oscB.frequency.setTargetAtTime(targetChord[i], t, 0.08);
+        });
+      }
+
+      // Rhythmic eighth-note bass pulse (root + octave bounce)
+      const rootFreq = bassNotes[chordIdx];
+      const noteFreq = (barStep === 3 || barStep === 6) ? rootFreq * 2 : rootFreq;
+      bassOsc.frequency.setValueAtTime(noteFreq, t);
+
+      bassGain.gain.cancelScheduledValues(t);
+      bassGain.gain.setValueAtTime(0.001, t);
+      bassGain.gain.linearRampToValueAtTime(barStep % 2 === 0 ? 0.42 : 0.26, t + 0.02);
+      bassGain.gain.exponentialRampToValueAtTime(0.04, t + 0.22);
+
+      bassFilter.frequency.cancelScheduledValues(t);
+      bassFilter.frequency.setValueAtTime(barStep % 2 === 0 ? 520 : 340, t);
+      bassFilter.frequency.exponentialRampToValueAtTime(180, t + 0.22);
+
+      step++;
+    };
+
+    triggerStep();
+    const seqInterval = setInterval(triggerStep, stepMs);
+
+    synthNodes = {
+      masterBus,
+      lfo,
+      padVoices,
+      bassOsc,
+      seqInterval
+    };
+
+    isSynthActive = true;
+    demoSynthBtn.classList.add('active');
+    playBtn.textContent = '⏸';
+    trackNameEl.textContent = 'Synthwave Groove (Fmaj7 → Cmaj9)';
+    refreshCurrentVolume();
+    showToast('Synth groove active — drag speed slider to hear fade');
+  }
+
+  function stopDemoSynth(keepLabel = false) {
+    if (synthNodes) {
+      clearInterval(synthNodes.seqInterval);
+      try {
+        synthNodes.lfo.stop();
+        synthNodes.bassOsc.stop();
+        synthNodes.padVoices.forEach((v) => {
+          v.oscA.stop();
+          v.oscB.stop();
+        });
+        synthNodes.masterBus.disconnect();
+      } catch (e) {}
+      synthNodes = null;
+    }
+    isSynthActive = false;
+    demoSynthBtn.classList.remove('active');
+    if (!keepLabel) {
+      playBtn.textContent = '▶';
+      if (!playlist.length) {
+        trackNameEl.textContent = 'Tap "Test Synth" or load local MP3s';
+      }
+    }
+  }
+
+  function applySmoothVolume(percent) {
+    const clamped = Math.max(0, Math.min(100, percent));
+    volDisplay.textContent = `${Math.round(clamped)}%`;
+    gainBarFill.style.width = `${clamped}%`;
+
+    // Perceptual curve so volume changes feel linear to human ears
+    const normalized = clamped / 100;
+    const gainValue = normalized === 0 ? 0.0001 : Math.pow(normalized, 1.55);
+
+    if (audioCtx && gainNode) {
+      const tau = Math.max(0.05, smoothingSeconds / 3);
+      gainNode.gain.setTargetAtTime(gainValue, audioCtx.currentTime, tau);
+    }
+  }
+
+  // --- SPEED INTERPOLATION & SVG GRAPH ---
+  function calculateVolumeForSpeed(speed) {
+    const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
+    if (sorted.length === 0) return 50;
+    if (speed <= sorted[0].speed) return sorted[0].vol;
+    if (speed >= sorted[sorted.length - 1].speed) return sorted[sorted.length - 1].vol;
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const p1 = sorted[i];
+      const p2 = sorted[i + 1];
+      if (speed >= p1.speed && speed <= p2.speed) {
+        if (p2.speed === p1.speed) return p1.vol;
+        const ratio = (speed - p1.speed) / (p2.speed - p1.speed);
+        return p1.vol + ratio * (p2.vol - p1.vol);
+      }
+    }
+    return sorted[0].vol;
+  }
+
+  function getMaxGraphSpeed() {
+    const highestInterval = intervals.reduce((max, item) => Math.max(max, item.speed), 0);
+    return Math.max(140, Math.ceil(highestInterval / 20) * 20);
+  }
+
+  function updateGraph(currentSpeed = 0, currentVol = 35) {
+    const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
+    const maxSpeed = getMaxGraphSpeed();
+
+    // Update slider & axis bounds dynamically if user enters >140 speed
+    simSlider.max = maxSpeed;
+    midAxisLabel.textContent = Math.round(maxSpeed / 2);
+    maxAxisLabel.textContent = maxSpeed;
+
+    const xMin = 28;
+    const xMax = 310;
+    const yTop = 12;   // 100% volume
+    const yBot = 96;   // 0% volume
+
+    const toX = (spd) => xMin + (Math.max(0, Math.min(maxSpeed, spd)) / maxSpeed) * (xMax - xMin);
+    const toY = (vol) => yBot - (Math.max(0, Math.min(100, vol)) / 100) * (yBot - yTop);
+
+    // Build curve points extending from 0 to maxSpeed
+    const points = [];
+    if (sorted.length > 0) {
+      if (sorted[0].speed > 0) {
+        points.push({ x: toX(0), y: toY(sorted[0].vol) });
+      }
+      sorted.forEach((pt) => {
+        points.push({ x: toX(pt.speed), y: toY(pt.vol) });
+      });
+      if (sorted[sorted.length - 1].speed < maxSpeed) {
+        points.push({ x: toX(maxSpeed), y: toY(sorted[sorted.length - 1].vol) });
+      }
+    }
+
+    const polyStr = points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    curveLine.setAttribute('points', polyStr);
+
+    if (points.length > 0) {
+      const areaStr = `${points[0].x.toFixed(1)},${yBot} ${polyStr} ${points[points.length - 1].x.toFixed(1)},${yBot}`;
+      curveArea.setAttribute('points', areaStr);
+    } else {
+      curveArea.setAttribute('points', '');
+    }
+
+    // Draw editable control dots
+    curveNodes.innerHTML = '';
+    sorted.forEach((pt) => {
+      const cx = toX(pt.speed);
+      const cy = toY(pt.vol);
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', cx);
+      circle.setAttribute('cy', cy);
+      circle.setAttribute('r', '3.8');
+      circle.setAttribute('fill', '#f97316');
+      circle.setAttribute('stroke', '#0f172a');
+      circle.setAttribute('stroke-width', '1.5');
+      curveNodes.appendChild(circle);
+    });
+
+    // Update live blue rider marker
+    const liveX = toX(currentSpeed);
+    const liveY = toY(currentVol);
+    liveCrosshair.setAttribute('x1', liveX);
+    liveCrosshair.setAttribute('x2', liveX);
+    liveMarker.setAttribute('cx', liveX);
+    liveMarker.setAttribute('cy', liveY);
+  }
+
+  function updateSpeed(rawSpeed) {
+    // Exponential moving average to smooth out GPS jitter
+    filteredSpeed = filteredSpeed * 0.7 + rawSpeed * 0.3;
+    if (filteredSpeed < 1.2) filteredSpeed = 0;
+
+    const roundedSpeed = Math.round(filteredSpeed);
+    speedDisplay.textContent = roundedSpeed;
+
+    const targetVol = calculateVolumeForSpeed(filteredSpeed);
+    applySmoothVolume(targetVol);
+    updateGraph(filteredSpeed, targetVol);
+  }
+
+  // --- INTERVAL EDITOR UI ---
+  function saveSettings() {
+    localStorage.setItem('sv_intervals', JSON.stringify(intervals));
+    localStorage.setItem('sv_unit', unit);
+    localStorage.setItem('sv_smooth', smoothingSeconds);
+  }
+
+  function renderIntervals() {
+    intervalsContainer.innerHTML = '';
+    intervals.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'interval-row';
+      row.innerHTML = `
+        <div class="input-group">
+          <input type="number" value="${item.speed}" min="0" max="300" data-idx="${idx}" data-field="speed" />
+          <span>${unit === 'kmh' ? 'km/h' : 'mph'}</span>
+        </div>
+        <div class="input-group">
+          <input type="number" value="${item.vol}" min="0" max="100" data-idx="${idx}" data-field="vol" />
+          <span>% vol</span>
+        </div>
+        <button class="del-btn" data-del="${idx}" ${intervals.length <= 2 ? 'disabled' : ''} title="Remove point">✕</button>
+      `;
+      intervalsContainer.appendChild(row);
+    });
+
+    intervalsContainer.querySelectorAll('input').forEach((inp) => {
+      inp.addEventListener('change', (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        const field = e.target.dataset.field;
+        let val = parseFloat(e.target.value);
+        if (isNaN(val)) val = 0;
+        if (field === 'vol') val = Math.max(0, Math.min(100, val));
+        if (field === 'speed') val = Math.max(0, Math.min(300, val));
+
+        intervals[idx][field] = val;
+        intervals.sort((a, b) => a.speed - b.speed);
+        saveSettings();
+        renderIntervals();
+        refreshCurrentVolume();
+      });
+    });
+
+    intervalsContainer.querySelectorAll('.del-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const idx = parseInt(e.target.dataset.del, 10);
+        if (intervals.length > 2) {
+          intervals.splice(idx, 1);
+          saveSettings();
+          renderIntervals();
+          refreshCurrentVolume();
+        }
+      });
+    });
+
+    refreshCurrentVolume();
+  }
+
+  addIntervalBtn.addEventListener('click', () => {
+    const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
+    const last = sorted[sorted.length - 1] || { speed: 60, vol: 80 };
+    intervals.push({
+      speed: last.speed + 20,
+      vol: Math.min(100, last.vol + 10)
+    });
+    intervals.sort((a, b) => a.speed - b.speed);
+    saveSettings();
+    renderIntervals();
+    showToast('Added speed point');
+  });
+
+  function refreshCurrentVolume() {
+    const spd = simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed;
+    const targetVol = calculateVolumeForSpeed(spd);
+    applySmoothVolume(targetVol);
+    updateGraph(spd, targetVol);
+  }
+
+  // --- MP3 PLAYLIST & TRANSPORT ---
+  fileInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    stopDemoSynth(true);
+    playlist = files.map((file) => ({
+      name: file.name.replace(/\.[^/.]+$/, ''),
+      url: URL.createObjectURL(file)
+    }));
+    currentTrackIndex = 0;
+    loadTrack(0, true);
+    showToast(`Loaded ${playlist.length} track${playlist.length > 1 ? 's' : ''}`);
+  });
+
+  function loadTrack(index, autoplay = false) {
+    if (!playlist.length) return;
+    stopDemoSynth(true);
+    currentTrackIndex = (index + playlist.length) % playlist.length;
+    const track = playlist[currentTrackIndex];
+    audioEl.src = track.url;
+    trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
+
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.name,
+        artist: 'SpeedVolume'
+      });
+      navigator.mediaSession.setActionHandler('nexttrack', () => loadTrack(currentTrackIndex + 1, true));
+      navigator.mediaSession.setActionHandler('previoustrack', () => loadTrack(currentTrackIndex - 1, true));
+    }
+
+    if (autoplay) {
+      initAudioEngine();
+      audioEl.play().then(() => {
+        playBtn.textContent = '⏸';
+        refreshCurrentVolume();
+      }).catch((err) => {
+        console.warn('Playback blocked:', err);
+      });
+    }
+  }
+
+  demoSynthBtn.addEventListener('click', () => {
+    if (isSynthActive) {
+      stopDemoSynth();
+    } else {
+      startDemoSynth();
+    }
+  });
+
+  playBtn.addEventListener('click', () => {
+    if (isSynthActive) {
+      stopDemoSynth();
+      return;
+    }
+    if (!playlist.length) {
+      startDemoSynth();
+      return;
+    }
+    initAudioEngine();
+    if (audioEl.paused) {
+      audioEl.play();
+      playBtn.textContent = '⏸';
+      refreshCurrentVolume();
+    } else {
+      audioEl.pause();
+      playBtn.textContent = '▶';
+    }
+  });
+
+  nextBtn.addEventListener('click', () => {
+    if (playlist.length) loadTrack(currentTrackIndex + 1, !audioEl.paused);
+  });
+
+  prevBtn.addEventListener('click', () => {
+    if (playlist.length) loadTrack(currentTrackIndex - 1, !audioEl.paused);
+  });
+
+  audioEl.addEventListener('ended', () => {
+    if (playlist.length) loadTrack(currentTrackIndex + 1, true);
+  });
+
+  // --- GPS & WAKE LOCK ---
+  async function requestWakeLock() {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+      } catch (err) {
+        // Ignore if battery saver / unsupported
+      }
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && watchId !== null) {
+      requestWakeLock();
+    }
+  });
+
+  gpsBtn.addEventListener('click', () => {
+    initAudioEngine();
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      gpsBtn.textContent = 'Start GPS';
+      gpsBtn.classList.remove('active');
+      gpsStatus.textContent = 'GPS stopped.';
+      if (wakeLock) wakeLock.release();
+      return;
+    }
+
+    if (!('geolocation' in navigator)) {
+      gpsStatus.textContent = 'Geolocation not supported in this browser.';
+      return;
+    }
+
+    // Automatically turn off simulator override when starting live GPS
+    simToggle.checked = false;
+    requestWakeLock();
+    gpsBtn.textContent = 'GPS Active';
+    gpsBtn.classList.add('active');
+    gpsStatus.textContent = 'Acquiring GPS satellites...';
+    showToast('GPS tracking started');
+
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        if (simToggle.checked) return;
+        const mps = pos.coords.speed;
+        const acc = Math.round(pos.coords.accuracy);
+        if (mps === null || mps < 0) {
+          gpsStatus.textContent = `GPS locked (±${acc}m) — waiting for movement`;
+          updateSpeed(0);
+          return;
+        }
+        const converted = unit === 'kmh' ? mps * 3.6 : mps * 2.23694;
+        gpsStatus.textContent = `GPS signal active (±${acc}m accuracy)`;
+        updateSpeed(converted);
+      },
+      (err) => {
+        gpsStatus.textContent = `GPS Error: ${err.message}. Check Location permissions.`;
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+    );
+  });
+
+  // --- UNIT, SMOOTHING & SIMULATOR CONTROLS ---
+  unitBtn.addEventListener('click', () => {
+    unit = unit === 'kmh' ? 'mph' : 'kmh';
+    unitBtn.textContent = unit === 'kmh' ? 'km/h' : 'mph';
+    speedUnitLabel.textContent = `Speed (${unit === 'kmh' ? 'km/h' : 'mph'})`;
+    simSpeedLabel.textContent = `${simSlider.value} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
+    saveSettings();
+    renderIntervals();
+    showToast(`Units set to ${unit === 'kmh' ? 'km/h' : 'mph'}`);
+  });
+
+  smoothSlider.value = smoothingSeconds;
+  smoothVal.textContent = `${smoothingSeconds.toFixed(1)}s`;
+  smoothSlider.addEventListener('input', (e) => {
+    smoothingSeconds = parseFloat(e.target.value);
+    smoothVal.textContent = `${smoothingSeconds.toFixed(1)}s`;
+    saveSettings();
+  });
+
+  simToggle.addEventListener('change', () => {
+    if (simToggle.checked) {
+      const val = parseFloat(simSlider.value);
+      speedDisplay.textContent = Math.round(val);
+      gpsStatus.textContent = 'Simulator override enabled. Drag slider to test.';
+      refreshCurrentVolume();
+    } else {
+      gpsStatus.textContent = watchId ? 'Using live GPS speed.' : 'Tap "Start GPS" for live tracking.';
+    }
+  });
+
+  simSlider.addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    simSpeedLabel.textContent = `${val} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
+    if (simToggle.checked) {
+      initAudioEngine();
+      filteredSpeed = val;
+      speedDisplay.textContent = Math.round(val);
+      const targetVol = calculateVolumeForSpeed(val);
+      applySmoothVolume(targetVol);
+      updateGraph(val, targetVol);
+    }
+  });
+
+  // --- INITIALIZE ---
+  unitBtn.textContent = unit === 'kmh' ? 'km/h' : 'mph';
+  speedUnitLabel.textContent = `Speed (${unit === 'kmh' ? 'km/h' : 'mph'})`;
+  simSpeedLabel.textContent = `${simSlider.value} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
+  renderIntervals();
+  refreshCurrentVolume();
+</script>
+</body>
+</html>
