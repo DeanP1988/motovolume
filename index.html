@@ -781,30 +781,15 @@
   const simToggle = document.getElementById('simToggle');
   const simSlider = document.getElementById('simSlider');
   const simSpeedLabel = document.getElementById('simSpeedLabel');
-  const demoSynthBtn = document.getElementById('demoSynthBtn');
-  const fileInput = document.getElementById('fileInput');
-  const cloudToggleBtn = document.getElementById('cloudToggleBtn');
-  const cloudBox = document.getElementById('cloudBox');
-  const cloudUrlInput = document.getElementById('cloudUrlInput');
-  const cloudImportBtn = document.getElementById('cloudImportBtn');
-  const playlistToggleBtn = document.getElementById('playlistToggleBtn');
-  const playlistCountLabel = document.getElementById('playlistCountLabel');
-  const playlistChevron = document.getElementById('playlistChevron');
-  const playlistDrawer = document.getElementById('playlistDrawer');
-  const playlistList = document.getElementById('playlistList');
-  const iosToast = document.getElementById('iosToast');
-
-  // --- TOAST HELPER ---
-  let toastTimeout = null;
-  function showToast(msg) {
-    iosToast.textContent = msg;
-    iosToast.classList.add('show');
-    clearTimeout(toastTimeout);
-    toastTimeout = setTimeout(() => iosToast.classList.remove('show'), 2400);
-  }
-
-  // --- WEB AUDIO API ENGINE ---
+  // --- WEB AUDIO API ENGINE (iOS Background Audio Safe) ---
   function initAudioEngine() {
+    // Tell iOS Safari this app is a dedicated media player (prevents background muting)
+    if ('audioSession' in navigator) {
+      try {
+        navigator.audioSession.type = 'playback';
+      } catch (e) {}
+    }
+
     if (!audioCtx) {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AudioContext();
@@ -816,6 +801,21 @@
 
       mediaSourceNode = audioCtx.createMediaElementSource(audioEl);
       mediaSourceNode.connect(gainNode);
+
+      // Silent 1-sample loop keeps iOS AudioContext alive when screen locks or switching apps
+      const silentBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+      const keepAliveSource = audioCtx.createBufferSource();
+      keepAliveSource.buffer = silentBuffer;
+      keepAliveSource.loop = true;
+      keepAliveSource.connect(audioCtx.destination);
+      keepAliveSource.start();
+
+      // Immediately resume if iOS tries to suspend AudioContext on screen lock
+      audioCtx.addEventListener('statechange', () => {
+        if (audioCtx.state === 'suspended' && (!audioEl.paused || synthPlaying)) {
+          audioCtx.resume().catch(() => {});
+        }
+      });
     }
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().catch(() => {});
@@ -823,7 +823,7 @@
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (audioCtx && audioCtx.state === 'suspended') {
+    if (audioCtx && audioCtx.state !== 'running' && (!audioEl.paused || synthPlaying)) {
       audioCtx.resume().catch(() => {});
     }
     if (document.visibilityState === 'visible' && watchId !== null) {
