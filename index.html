@@ -621,7 +621,7 @@
       <!-- Collapsible Internet Archive / Direct URL Importer -->
       <div id="cloudBox" class="cloud-box">
         <div class="cloud-input-row">
-          <input type="url" id="cloudUrlInput" placeholder="https://archive.org/details/your-item-id" />
+          <input type="url" id="cloudUrlInput" value="https://archive.org/details/my-motorcycle-ride-mix" placeholder="https://archive.org/details/your-item-id" />
           <button id="cloudImportBtn" class="cloud-import-btn" type="button">Fetch</button>
         </div>
         <div class="cloud-hint">
@@ -737,456 +737,97 @@
 <script>
   // --- STATE & DEFAULTS ---
   let unit = localStorage.getItem('sv_unit') || 'kmh';
-  let intervals = JSON.parse(localStorage.getItem('sv_intervals')) || [
-    { speed: 0, vol: 35 },
-    { speed: 30, vol: 50 },
-    { speed: 60, vol: 75 },
+  const defaultTemplateIntervals = [
+    { speed: 0, vol: 30 },
+    { speed: 30, vol: 45 },
+    { speed: 60, vol: 65 },
+    { speed: 80, vol: 85 },
     { speed: 100, vol: 100 }
   ];
+  let intervals = JSON.parse(localStorage.getItem('sv_intervals')) || defaultTemplateIntervals;
   let smoothingSeconds = parseFloat(localStorage.getItem('sv_smooth')) || 1.5;
 
   let playlist = [];
   let currentTrackIndex = 0;
   let audioCtx = null;
   let gainNode = null;
+  let mediaSourceNode = null;
   let watchId = null;
   let wakeLock = null;
   let filteredSpeed = 0;
-  let isSynthActive = false;
-  let synthNodes = null;
-  let toastTimeout = null;
 
-  // --- INDEXEDDB OFFLINE MP3 STORAGE ---
-  const DB_NAME = 'SpeedVolumeDB';
-  const STORE_NAME = 'tracks';
+  // Built-in Synthwave Loop State
+  let synthPlaying = false;
+  let synthTimer = null;
+  let synthStep = 0;
 
-  function openTrackDB() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
-
-  async function saveTrackToDB(name, fileOrUrl, isRemote = false) {
-    try {
-      const db = await openTrackDB();
-      return await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const record = isRemote
-          ? { name, remoteUrl: fileOrUrl, isRemote: true }
-          : { name, file: fileOrUrl, isRemote: false };
-        const req = store.add(record);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-    } catch (e) {
-      console.warn('Could not persist track to IndexedDB:', e);
-      return null;
-    }
-  }
-
-  async function deleteTrackFromDB(id) {
-    if (id == null) return;
-    try {
-      const db = await openTrackDB();
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).delete(id);
-    } catch (e) {
-      console.warn('Failed to delete track from DB:', e);
-    }
-  }
-
-  async function clearTracksDB() {
-    try {
-      const db = await openTrackDB();
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).clear();
-    } catch (e) {
-      console.warn('Failed to clear DB:', e);
-    }
-  }
-
-  async function restoreSavedPlaylist() {
-    try {
-      const db = await openTrackDB();
-      const saved = await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const req = tx.objectStore(STORE_NAME).getAll();
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => reject(req.error);
-      });
-
-      if (saved.length > 0) {
-        playlist = saved.map((item) => ({
-          id: item.id,
-          name: item.name,
-          url: item.isRemote ? item.remoteUrl : URL.createObjectURL(item.file),
-          isRemote: !!item.isRemote
-        }));
-        currentTrackIndex = 0;
-        loadTrack(0, false);
-        showToast(`Restored ${playlist.length} saved track${playlist.length > 1 ? 's' : ''}`);
-      }
-    } catch (e) {
-      console.warn('Could not restore saved tracks:', e);
-    }
-  }
-
-  // --- DOM REFERENCES ---
+  // --- DOM ELEMENTS ---
   const audioEl = document.getElementById('audioEl');
   const playBtn = document.getElementById('playBtn');
   const prevBtn = document.getElementById('prevBtn');
   const nextBtn = document.getElementById('nextBtn');
+  const trackNameEl = document.getElementById('trackName');
+  const speedDisplay = document.getElementById('speedDisplay');
+  const volDisplay = document.getElementById('volDisplay');
+  const gainBarFill = document.getElementById('gainBarFill');
+  const intervalsContainer = document.getElementById('intervalsContainer');
+  const addIntervalBtn = document.getElementById('addIntervalBtn');
+  const gpsBtn = document.getElementById('gpsBtn');
+  const gpsStatus = document.getElementById('gpsStatus');
+  const unitBtn = document.getElementById('unitBtn');
+  const speedUnitLabel = document.getElementById('speedUnitLabel');
+  const smoothSlider = document.getElementById('smoothSlider');
+  const smoothVal = document.getElementById('smoothVal');
+  const simToggle = document.getElementById('simToggle');
+  const simSlider = document.getElementById('simSlider');
+  const simSpeedLabel = document.getElementById('simSpeedLabel');
+  const demoSynthBtn = document.getElementById('demoSynthBtn');
   const fileInput = document.getElementById('fileInput');
   const cloudToggleBtn = document.getElementById('cloudToggleBtn');
   const cloudBox = document.getElementById('cloudBox');
   const cloudUrlInput = document.getElementById('cloudUrlInput');
   const cloudImportBtn = document.getElementById('cloudImportBtn');
-  const demoSynthBtn = document.getElementById('demoSynthBtn');
-  const trackNameEl = document.getElementById('trackName');
   const playlistToggleBtn = document.getElementById('playlistToggleBtn');
   const playlistCountLabel = document.getElementById('playlistCountLabel');
   const playlistChevron = document.getElementById('playlistChevron');
   const playlistDrawer = document.getElementById('playlistDrawer');
   const playlistList = document.getElementById('playlistList');
-
-  const speedDisplay = document.getElementById('speedDisplay');
-  const speedUnitLabel = document.getElementById('speedUnitLabel');
-  const volDisplay = document.getElementById('volDisplay');
-  const gainBarFill = document.getElementById('gainBarFill');
-
-  const intervalsContainer = document.getElementById('intervalsContainer');
-  const addIntervalBtn = document.getElementById('addIntervalBtn');
-  const smoothSlider = document.getElementById('smoothSlider');
-  const smoothVal = document.getElementById('smoothVal');
-
-  const unitBtn = document.getElementById('unitBtn');
-  const gpsBtn = document.getElementById('gpsBtn');
-  const gpsStatus = document.getElementById('gpsStatus');
-  const simToggle = document.getElementById('simToggle');
-  const simSlider = document.getElementById('simSlider');
-  const simSpeedLabel = document.getElementById('simSpeedLabel');
   const iosToast = document.getElementById('iosToast');
 
-  // SVG Graph Elements
-  const curveLine = document.getElementById('curveLine');
-  const curveArea = document.getElementById('curveArea');
-  const curveNodes = document.getElementById('curveNodes');
-  const liveCrosshair = document.getElementById('liveCrosshair');
-  const liveMarker = document.getElementById('liveMarker');
-  const midAxisLabel = document.getElementById('midAxisLabel');
-  const maxAxisLabel = document.getElementById('maxAxisLabel');
-
+  // --- TOAST HELPER ---
+  let toastTimeout = null;
   function showToast(msg) {
     iosToast.textContent = msg;
     iosToast.classList.add('show');
     clearTimeout(toastTimeout);
-    toastTimeout = setTimeout(() => {
-      iosToast.classList.remove('show');
-    }, 2200);
+    toastTimeout = setTimeout(() => iosToast.classList.remove('show'), 2400);
   }
 
   // --- WEB AUDIO API ENGINE ---
   function initAudioEngine() {
-    if (audioCtx) {
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      return;
+    if (!audioCtx) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContext();
+      gainNode = audioCtx.createGain();
+      const initialVol = calculateVolumeForSpeed(filteredSpeed);
+      const norm = initialVol / 100;
+      gainNode.gain.setValueAtTime(norm === 0 ? 0.0001 : Math.pow(norm, 1.6), audioCtx.currentTime);
+      gainNode.connect(audioCtx.destination);
+
+      mediaSourceNode = audioCtx.createMediaElementSource(audioEl);
+      mediaSourceNode.connect(gainNode);
     }
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    audioCtx = new AudioContext();
-
-    const source = audioCtx.createMediaElementSource(audioEl);
-    gainNode = audioCtx.createGain();
-    gainNode.gain.setValueAtTime(0.35, audioCtx.currentTime);
-
-    source.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-  }
-
-  // Built-in Musical Synthwave / Lo-Fi Groove Loop for realistic desk testing
-  function startDemoSynth() {
-    initAudioEngine();
-    if (!audioCtx || !gainNode) return;
-
-    // Pause any playing MP3
-    if (!audioEl.paused) {
-      audioEl.pause();
-    }
-
-    stopDemoSynth(true);
-
-    const now = audioCtx.currentTime;
-
-    // Master sub-bus for the demo synth before feeding the main speed-controlled gainNode
-    const masterBus = audioCtx.createGain();
-    masterBus.gain.setValueAtTime(0.001, now);
-    masterBus.gain.exponentialRampToValueAtTime(0.32, now + 0.4); // Smooth fade-in
-    masterBus.connect(gainNode);
-
-    // Warm stereo-feel delay/echo send
-    const delay = audioCtx.createDelay(1.0);
-    delay.delayTime.setValueAtTime(0.375, now); // Dotted-eighth groove at 120 BPM
-    const delayFeedback = audioCtx.createGain();
-    delayFeedback.gain.setValueAtTime(0.32, now);
-    const delayFilter = audioCtx.createBiquadFilter();
-    delayFilter.type = 'lowpass';
-    delayFilter.frequency.setValueAtTime(1400, now);
-
-    delay.connect(delayFilter);
-    delayFilter.connect(delayFeedback);
-    delayFeedback.connect(delay);
-    delayFilter.connect(masterBus);
-
-    // Pad Filter + Slow LFO Breathing Sweep
-    const padFilter = audioCtx.createBiquadFilter();
-    padFilter.type = 'lowpass';
-    padFilter.frequency.setValueAtTime(950, now);
-    padFilter.Q.setValueAtTime(1.8, now);
-    padFilter.connect(masterBus);
-    padFilter.connect(delay);
-
-    const lfo = audioCtx.createOscillator();
-    const lfoGain = audioCtx.createGain();
-    lfo.type = 'sine';
-    lfo.frequency.setValueAtTime(0.18, now); // Slow, hypnotic filter sweep
-    lfoGain.gain.setValueAtTime(420, now);
-    lfo.connect(lfoGain);
-    lfoGain.connect(padFilter.frequency);
-    lfo.start(now);
-
-    // 4-Chord Lush Progression (Fmaj7 -> Em7 -> Dm9 -> Cmaj9) looping every 8 seconds
-    const chords = [
-      [174.61, 220.00, 261.63, 329.63], // Fmaj7
-      [164.81, 196.00, 246.94, 293.66], // Em7
-      [146.83, 174.61, 220.00, 329.63], // Dm9
-      [130.81, 196.00, 246.94, 293.66]  // Cmaj9
-    ];
-    const bassNotes = [87.31, 82.41, 73.42, 65.41]; // F2 -> E2 -> D2 -> C2
-
-    // Create 4 dual-detuned pad voices (8 oscillators total)
-    const padVoices = [];
-    for (let v = 0; v < 4; v++) {
-      const voiceGain = audioCtx.createGain();
-      voiceGain.gain.setValueAtTime(0.22, now);
-      voiceGain.connect(padFilter);
-
-      const oscA = audioCtx.createOscillator();
-      const oscB = audioCtx.createOscillator();
-      oscA.type = 'sawtooth';
-      oscB.type = 'triangle';
-      oscA.detune.setValueAtTime(-7, now);
-      oscB.detune.setValueAtTime(7, now);
-
-      oscA.frequency.setValueAtTime(chords[0][v], now);
-      oscB.frequency.setValueAtTime(chords[0][v], now);
-
-      oscA.connect(voiceGain);
-      oscB.connect(voiceGain);
-      oscA.start(now);
-      oscB.start(now);
-
-      padVoices.push({ oscA, oscB, voiceGain });
-    }
-
-    // Warm analog-style sub/pluck bassline
-    const bassFilter = audioCtx.createBiquadFilter();
-    bassFilter.type = 'lowpass';
-    bassFilter.frequency.setValueAtTime(340, now);
-    bassFilter.Q.setValueAtTime(2.5, now);
-
-    const bassGain = audioCtx.createGain();
-    bassGain.gain.setValueAtTime(0.001, now);
-
-    const bassOsc = audioCtx.createOscillator();
-    bassOsc.type = 'sawtooth';
-    bassOsc.frequency.setValueAtTime(bassNotes[0], now);
-
-    bassOsc.connect(bassFilter);
-    bassFilter.connect(bassGain);
-    bassGain.connect(masterBus);
-    bassOsc.start(now);
-
-    // Step sequencer loop (8th-note groove at 120 BPM = 250ms per step)
-    let step = 0;
-    const stepMs = 250;
-    const triggerStep = () => {
-      if (!audioCtx || !isSynthActive) return;
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      const t = audioCtx.currentTime;
-      const chordIdx = Math.floor(step / 8) % chords.length;
-      const barStep = step % 8;
-
-      // Smoothly glide chord voicings at the start of each bar
-      if (barStep === 0) {
-        const targetChord = chords[chordIdx];
-        padVoices.forEach((voice, i) => {
-          voice.oscA.frequency.setTargetAtTime(targetChord[i], t, 0.08);
-          voice.oscB.frequency.setTargetAtTime(targetChord[i], t, 0.08);
-        });
-      }
-
-      // Rhythmic eighth-note bass pulse (root + octave bounce)
-      const rootFreq = bassNotes[chordIdx];
-      const noteFreq = (barStep === 3 || barStep === 6) ? rootFreq * 2 : rootFreq;
-      bassOsc.frequency.setValueAtTime(noteFreq, t);
-
-      bassGain.gain.cancelScheduledValues(t);
-      bassGain.gain.setValueAtTime(0.001, t);
-      bassGain.gain.linearRampToValueAtTime(barStep % 2 === 0 ? 0.42 : 0.26, t + 0.02);
-      bassGain.gain.exponentialRampToValueAtTime(0.04, t + 0.22);
-
-      bassFilter.frequency.cancelScheduledValues(t);
-      bassFilter.frequency.setValueAtTime(barStep % 2 === 0 ? 520 : 340, t);
-      bassFilter.frequency.exponentialRampToValueAtTime(180, t + 0.22);
-
-      step++;
-    };
-
-    triggerStep();
-    const seqInterval = setInterval(triggerStep, stepMs);
-
-    synthNodes = {
-      masterBus,
-      lfo,
-      padVoices,
-      bassOsc,
-      seqInterval
-    };
-
-    isSynthActive = true;
-    demoSynthBtn.classList.add('active');
-    playBtn.textContent = '⏸';
-    trackNameEl.textContent = 'Synthwave Groove (Fmaj7 → Cmaj9)';
-
-    // Bind iOS Lock Screen Media Session so synth stays alive when locked/backgrounded
-    setupMediaSession('Synthwave Groove', 'SpeedVolume Synth', true);
-    refreshCurrentVolume();
-    showToast('Synth groove active — background audio enabled');
-  }
-
-  function stopDemoSynth(keepLabel = false) {
-    if (synthNodes) {
-      clearInterval(synthNodes.seqInterval);
-      try {
-        synthNodes.lfo.stop();
-        synthNodes.bassOsc.stop();
-        synthNodes.padVoices.forEach((v) => {
-          v.oscA.stop();
-          v.oscB.stop();
-        });
-        synthNodes.masterBus.disconnect();
-      } catch (e) {}
-      synthNodes = null;
-    }
-    isSynthActive = false;
-    demoSynthBtn.classList.remove('active');
-    if (!keepLabel) {
-      playBtn.textContent = '▶';
-      if ('mediaSession' in navigator) {
-        navigator.mediaSession.playbackState = 'paused';
-      }
-      if (!playlist.length) {
-        trackNameEl.textContent = 'Tap "Test Synth", "Archive URL", or load MP3s';
-      }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
     }
   }
 
-  // --- IOS LOCK SCREEN & BACKGROUND MEDIA SESSION ---
-  function setupMediaSession(title, artist = 'SpeedVolume', isSynth = false) {
-    if (!('mediaSession' in navigator)) return;
-
-    const artworkUrl = document.getElementById('appleTouchIcon')?.href || '';
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: title || 'SpeedVolume Track',
-      artist: artist,
-      album: 'SpeedVolume Ride Mix',
-      artwork: artworkUrl ? [{ src: artworkUrl, sizes: '512x512', type: 'image/png' }] : []
-    });
-
-    navigator.mediaSession.playbackState = 'playing';
-
-    navigator.mediaSession.setActionHandler('play', () => {
-      initAudioEngine();
-      if (isSynth || isSynthActive) {
-        if (!isSynthActive) startDemoSynth();
-      } else if (playlist.length) {
-        audioEl.play();
-        playBtn.textContent = '⏸';
-        navigator.mediaSession.playbackState = 'playing';
-        renderPlaylist();
-      }
-    });
-
-    navigator.mediaSession.setActionHandler('pause', () => {
-      if (isSynthActive) {
-        stopDemoSynth();
-        renderPlaylist();
-      } else {
-        audioEl.pause();
-        playBtn.textContent = '▶';
-        navigator.mediaSession.playbackState = 'paused';
-        renderPlaylist();
-      }
-    });
-
-    navigator.mediaSession.setActionHandler('nexttrack', () => {
-      if (playlist.length) loadTrack(currentTrackIndex + 1, true);
-    });
-
-    navigator.mediaSession.setActionHandler('previoustrack', () => {
-      if (playlist.length) loadTrack(currentTrackIndex - 1, true);
-    });
-
-    try {
-      navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (!isSynthActive && audioEl.duration && details.seekTime != null) {
-          audioEl.currentTime = details.seekTime;
-        }
-      });
-    } catch (e) {}
-  }
-
-  // Keep Web Audio Context awake across iOS lock screen & app-switch transitions
   document.addEventListener('visibilitychange', () => {
-    if (audioCtx && audioCtx.state === 'suspended' && (!audioEl.paused || isSynthActive)) {
+    if (audioCtx && audioCtx.state === 'suspended') {
       audioCtx.resume().catch(() => {});
     }
     if (document.visibilityState === 'visible' && watchId !== null) {
       requestWakeLock();
-    }
-  });
-
-  // Update Lock Screen scrubber position for MP3 tracks
-  audioEl.addEventListener('timeupdate', () => {
-    if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
-      if (audioEl.duration && isFinite(audioEl.duration)) {
-        try {
-          navigator.mediaSession.setPositionState({
-            duration: audioEl.duration,
-            playbackRate: audioEl.playbackRate || 1,
-            position: audioEl.currentTime
-          });
-        } catch (e) {}
-      }
-    }
-  });
-
-  audioEl.addEventListener('play', () => {
-    initAudioEngine();
-    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-  });
-
-  audioEl.addEventListener('pause', () => {
-    if ('mediaSession' in navigator && !isSynthActive) {
-      navigator.mediaSession.playbackState = 'paused';
     }
   });
 
@@ -1195,17 +836,15 @@
     volDisplay.textContent = `${Math.round(clamped)}%`;
     gainBarFill.style.width = `${clamped}%`;
 
-    // Perceptual curve so volume changes feel linear to human ears
     const normalized = clamped / 100;
-    const gainValue = normalized === 0 ? 0.0001 : Math.pow(normalized, 1.55);
+    const gainValue = normalized === 0 ? 0.0001 : Math.pow(normalized, 1.6);
 
     if (audioCtx && gainNode) {
-      const tau = Math.max(0.05, smoothingSeconds / 3);
-      gainNode.gain.setTargetAtTime(gainValue, audioCtx.currentTime, tau);
+      gainNode.gain.setTargetAtTime(gainValue, audioCtx.currentTime, smoothingSeconds / 3);
     }
   }
 
-  // --- SPEED INTERPOLATION & SVG GRAPH ---
+  // --- SPEED INTERPOLATION & LIVE SVG GRAPH ---
   function calculateVolumeForSpeed(speed) {
     const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
     if (sorted.length === 0) return 50;
@@ -1224,90 +863,82 @@
     return sorted[0].vol;
   }
 
-  function getMaxGraphSpeed() {
-    const highestInterval = intervals.reduce((max, item) => Math.max(max, item.speed), 0);
-    return Math.max(140, Math.ceil(highestInterval / 20) * 20);
-  }
-
-  function updateGraph(currentSpeed = 0, currentVol = 35) {
+  function updateGraph(currentSpeed = filteredSpeed, currentVol = calculateVolumeForSpeed(filteredSpeed)) {
     const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
-    const maxSpeed = getMaxGraphSpeed();
+    const maxDataSpeed = sorted.length ? sorted[sorted.length - 1].speed : 100;
+    const maxSpeed = Math.max(140, maxDataSpeed, currentSpeed);
 
-    // Update slider & axis bounds dynamically if user enters >140 speed
-    simSlider.max = maxSpeed;
-    midAxisLabel.textContent = Math.round(maxSpeed / 2);
-    maxAxisLabel.textContent = maxSpeed;
+    document.getElementById('midAxisLabel').textContent = Math.round(maxSpeed / 2);
+    document.getElementById('maxAxisLabel').textContent = Math.round(maxSpeed);
+    simSlider.max = Math.round(maxSpeed);
 
-    const xMin = 28;
-    const xMax = 310;
-    const yTop = 12;   // 100% volume
-    const yBot = 96;   // 0% volume
-
+    const xMin = 28, xMax = 310;
+    const yTop = 12, yBot = 96;
     const toX = (spd) => xMin + (Math.max(0, Math.min(maxSpeed, spd)) / maxSpeed) * (xMax - xMin);
     const toY = (vol) => yBot - (Math.max(0, Math.min(100, vol)) / 100) * (yBot - yTop);
 
-    // Build curve points extending from 0 to maxSpeed
-    const points = [];
+    const pts = [];
     if (sorted.length > 0) {
       if (sorted[0].speed > 0) {
-        points.push({ x: toX(0), y: toY(sorted[0].vol) });
+        pts.push({ x: toX(0), y: toY(sorted[0].vol), isNode: false });
       }
       sorted.forEach((pt) => {
-        points.push({ x: toX(pt.speed), y: toY(pt.vol) });
+        pts.push({ x: toX(pt.speed), y: toY(pt.vol), isNode: true });
       });
       if (sorted[sorted.length - 1].speed < maxSpeed) {
-        points.push({ x: toX(maxSpeed), y: toY(sorted[sorted.length - 1].vol) });
+        pts.push({ x: toX(maxSpeed), y: toY(sorted[sorted.length - 1].vol), isNode: false });
       }
     }
 
-    const polyStr = points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-    curveLine.setAttribute('points', polyStr);
+    const polyPoints = pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    document.getElementById('curveLine').setAttribute('points', polyPoints);
 
-    if (points.length > 0) {
-      const areaStr = `${points[0].x.toFixed(1)},${yBot} ${polyStr} ${points[points.length - 1].x.toFixed(1)},${yBot}`;
-      curveArea.setAttribute('points', areaStr);
-    } else {
-      curveArea.setAttribute('points', '');
+    if (pts.length > 0) {
+      const areaPoints = `${pts[0].x.toFixed(1)},${yBot} ${polyPoints} ${pts[pts.length - 1].x.toFixed(1)},${yBot}`;
+      document.getElementById('curveArea').setAttribute('points', areaPoints);
     }
 
-    // Draw editable control dots
-    curveNodes.innerHTML = '';
-    sorted.forEach((pt) => {
-      const cx = toX(pt.speed);
-      const cy = toY(pt.vol);
+    const nodesGroup = document.getElementById('curveNodes');
+    nodesGroup.innerHTML = '';
+    pts.filter((p) => p.isNode).forEach((p) => {
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      circle.setAttribute('cx', cx);
-      circle.setAttribute('cy', cy);
-      circle.setAttribute('r', '3.8');
+      circle.setAttribute('cx', p.x.toFixed(1));
+      circle.setAttribute('cy', p.y.toFixed(1));
+      circle.setAttribute('r', '4');
       circle.setAttribute('fill', '#f97316');
       circle.setAttribute('stroke', '#0f172a');
       circle.setAttribute('stroke-width', '1.5');
-      curveNodes.appendChild(circle);
+      nodesGroup.appendChild(circle);
     });
 
-    // Update live blue rider marker
     const liveX = toX(currentSpeed);
     const liveY = toY(currentVol);
-    liveCrosshair.setAttribute('x1', liveX);
-    liveCrosshair.setAttribute('x2', liveX);
-    liveMarker.setAttribute('cx', liveX);
-    liveMarker.setAttribute('cy', liveY);
+    const crosshair = document.getElementById('liveCrosshair');
+    const marker = document.getElementById('liveMarker');
+    crosshair.setAttribute('x1', liveX.toFixed(1));
+    crosshair.setAttribute('x2', liveX.toFixed(1));
+    marker.setAttribute('cx', liveX.toFixed(1));
+    marker.setAttribute('cy', liveY.toFixed(1));
   }
 
   function updateSpeed(rawSpeed) {
-    // Exponential moving average to smooth out GPS jitter
     filteredSpeed = filteredSpeed * 0.7 + rawSpeed * 0.3;
     if (filteredSpeed < 1.2) filteredSpeed = 0;
 
-    const roundedSpeed = Math.round(filteredSpeed);
-    speedDisplay.textContent = roundedSpeed;
-
+    speedDisplay.textContent = Math.round(filteredSpeed);
     const targetVol = calculateVolumeForSpeed(filteredSpeed);
     applySmoothVolume(targetVol);
     updateGraph(filteredSpeed, targetVol);
   }
 
-  // --- INTERVAL EDITOR UI ---
+  function refreshCurrentVolume() {
+    const spd = simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed;
+    const targetVol = calculateVolumeForSpeed(spd);
+    applySmoothVolume(targetVol);
+    updateGraph(spd, targetVol);
+  }
+
+  // --- SPEED INTERVAL EDITOR ---
   function saveSettings() {
     localStorage.setItem('sv_intervals', JSON.stringify(intervals));
     localStorage.setItem('sv_unit', unit);
@@ -1316,19 +947,21 @@
 
   function renderIntervals() {
     intervalsContainer.innerHTML = '';
+    const unitLabel = unit === 'kmh' ? 'km/h' : 'mph';
+
     intervals.forEach((item, idx) => {
       const row = document.createElement('div');
       row.className = 'interval-row';
       row.innerHTML = `
         <div class="input-group">
           <input type="number" value="${item.speed}" min="0" max="300" data-idx="${idx}" data-field="speed" />
-          <span>${unit === 'kmh' ? 'km/h' : 'mph'}</span>
+          <span>${unitLabel}</span>
         </div>
         <div class="input-group">
           <input type="number" value="${item.vol}" min="0" max="100" data-idx="${idx}" data-field="vol" />
           <span>% vol</span>
         </div>
-        <button class="del-btn" data-del="${idx}" ${intervals.length <= 2 ? 'disabled' : ''} title="Remove point">✕</button>
+        <button class="del-btn" type="button" data-del="${idx}" ${intervals.length <= 2 ? 'disabled' : ''}>✕</button>
       `;
       intervalsContainer.appendChild(row);
     });
@@ -1352,7 +985,7 @@
 
     intervalsContainer.querySelectorAll('.del-btn').forEach((btn) => {
       btn.addEventListener('click', (e) => {
-        const idx = parseInt(e.target.dataset.del, 10);
+        const idx = parseInt(e.currentTarget.dataset.del, 10);
         if (intervals.length > 2) {
           intervals.splice(idx, 1);
           saveSettings();
@@ -1367,112 +1000,217 @@
 
   addIntervalBtn.addEventListener('click', () => {
     const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
-    const last = sorted[sorted.length - 1] || { speed: 60, vol: 80 };
-    intervals.push({
-      speed: last.speed + 20,
-      vol: Math.min(100, last.vol + 10)
-    });
+    const last = sorted[sorted.length - 1] || { speed: 80, vol: 85 };
+    const nextSpeed = last.speed + 20;
+    const nextVol = Math.min(100, last.vol + 10);
+    intervals.push({ speed: nextSpeed, vol: nextVol });
     intervals.sort((a, b) => a.speed - b.speed);
     saveSettings();
     renderIntervals();
-    showToast('Added speed point');
+    showToast(`Added ${nextSpeed} ${unit === 'kmh' ? 'km/h' : 'mph'} point`);
   });
 
-  function refreshCurrentVolume() {
-    const spd = simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed;
-    const targetVol = calculateVolumeForSpeed(spd);
-    applySmoothVolume(targetVol);
-    updateGraph(spd, targetVol);
+  // --- BUILT-IN SYNTHWAVE TEST LOOP ---
+  const synthChords = [
+    [174.61, 220.00, 261.63, 329.63], // Fmaj7
+    [164.81, 196.00, 246.94, 293.66], // Em7
+    [146.83, 174.61, 220.00, 329.63], // Dm9
+    [130.81, 196.00, 246.94, 293.66]  // Cmaj9
+  ];
+  const synthBass = [87.31, 82.41, 73.42, 65.41];
+
+  function playSynthStep() {
+    if (!synthPlaying || !audioCtx || !gainNode) return;
+    const now = audioCtx.currentTime;
+    const chordIdx = Math.floor(synthStep / 8) % synthChords.length;
+
+    // Warm Pad on beat 0 of each bar
+    if (synthStep % 8 === 0) {
+      synthChords[chordIdx].forEach((freq) => {
+        const osc = audioCtx.createOscillator();
+        const padGain = audioCtx.createGain();
+        const filter = audioCtx.createBiquadFilter();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, now);
+        osc.detune.setValueAtTime((Math.random() - 0.5) * 14, now);
+
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(650, now);
+        filter.frequency.exponentialRampToValueAtTime(1450, now + 1.6);
+
+        padGain.gain.setValueAtTime(0.001, now);
+        padGain.gain.linearRampToValueAtTime(0.045, now + 0.35);
+        padGain.gain.exponentialRampToValueAtTime(0.001, now + 2.3);
+
+        osc.connect(filter);
+        filter.connect(padGain);
+        padGain.connect(gainNode);
+        osc.start(now);
+        osc.stop(now + 2.35);
+      });
+    }
+
+    // Eighth-note Synthwave Bass Pluck
+    const bassOsc = audioCtx.createOscillator();
+    const bassFilter = audioCtx.createBiquadFilter();
+    const bassGain = audioCtx.createGain();
+    const octave = synthStep % 2 === 1 ? 2 : 1;
+
+    bassOsc.type = 'triangle';
+    bassOsc.frequency.setValueAtTime(synthBass[chordIdx] * octave, now);
+
+    bassFilter.type = 'lowpass';
+    bassFilter.frequency.setValueAtTime(900, now);
+    bassFilter.frequency.exponentialRampToValueAtTime(180, now + 0.22);
+
+    bassGain.gain.setValueAtTime(0.18, now);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+
+    bassOsc.connect(bassFilter);
+    bassFilter.connect(bassGain);
+    bassGain.connect(gainNode);
+    bassOsc.start(now);
+    bassOsc.stop(now + 0.25);
+
+    synthStep++;
   }
 
-  // --- MP3 PLAYLIST & TRANSPORT ---
+  function startSynth() {
+    initAudioEngine();
+    if (!audioEl.paused) audioEl.pause();
+    synthPlaying = true;
+    synthStep = 0;
+    demoSynthBtn.classList.add('active');
+    playBtn.textContent = '⏸';
+    trackNameEl.textContent = '♫ Synthwave Test Loop (Live Gain)';
+    playSynthStep();
+    synthTimer = setInterval(playSynthStep, 280);
+  }
+
+  function stopSynth() {
+    synthPlaying = false;
+    clearInterval(synthTimer);
+    synthTimer = null;
+    demoSynthBtn.classList.remove('active');
+    if (audioEl.paused) {
+      playBtn.textContent = '▶';
+    }
+  }
+
+  demoSynthBtn.addEventListener('click', () => {
+    if (synthPlaying) {
+      stopSynth();
+      trackNameEl.textContent = playlist.length ? playlist[currentTrackIndex].name : 'Synth paused';
+    } else {
+      startSynth();
+    }
+  });
+
+  // --- INDEXEDDB OFFLINE PLAYLIST PERSISTENCE ---
+  function openPlaylistDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('SpeedVolumeDB', 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('tracks')) {
+          db.createObjectStore('tracks', { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function savePlaylistToDB() {
+    try {
+      const db = await openPlaylistDB();
+      const tx = db.transaction('tracks', 'readwrite');
+      const store = tx.objectStore('tracks');
+      store.clear();
+      playlist.forEach((t) => {
+        store.add({ name: t.name, blob: t.blob || null, remoteUrl: t.remoteUrl || null });
+      });
+    } catch (e) {}
+  }
+
+  async function restoreSavedPlaylist() {
+    try {
+      const db = await openPlaylistDB();
+      const tx = db.transaction('tracks', 'readonly');
+      const store = tx.objectStore('tracks');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const items = req.result || [];
+        if (items.length > 0) {
+          playlist = items.map((item) => ({
+            name: item.name,
+            blob: item.blob,
+            remoteUrl: item.remoteUrl,
+            url: item.blob ? URL.createObjectURL(item.blob) : item.remoteUrl
+          }));
+          renderPlaylist();
+          loadTrack(0, false);
+        }
+      };
+    } catch (e) {}
+  }
+
+  // --- PLAYLIST QUEUE & MEDIA SESSION ---
   function renderPlaylist() {
-    playlistCountLabel.textContent = `Playlist Queue (${playlist.length} track${playlist.length === 1 ? '' : 's'})`;
+    playlistCountLabel.textContent = `Playlist Queue (${playlist.length} ${playlist.length === 1 ? 'track' : 'tracks'})`;
     playlistList.innerHTML = '';
 
-    if (!playlist.length) {
-      playlistList.innerHTML = `<div class="playlist-empty">No MP3s uploaded yet. Tap "+ Load MP3s" above to add songs.</div>`;
+    if (playlist.length === 0) {
+      playlistList.innerHTML = '<div class="playlist-empty">No tracks in queue yet. Load local MP3s or fetch an Archive URL above.</div>';
       return;
     }
 
     playlist.forEach((track, idx) => {
-      const isCurrent = idx === currentTrackIndex && !isSynthActive;
       const row = document.createElement('div');
-      row.className = `playlist-item ${isCurrent ? 'active' : ''}`;
+      row.className = `playlist-item ${idx === currentTrackIndex && !synthPlaying ? 'active' : ''}`;
       row.innerHTML = `
         <div class="playlist-item-info">
-          <span class="playlist-item-num">${isCurrent && !audioEl.paused ? '▶' : idx + 1}</span>
+          <span class="playlist-item-num">${idx === currentTrackIndex && !audioEl.paused ? '▶' : idx + 1}</span>
           <span class="playlist-item-title">${track.name}</span>
         </div>
-        <button class="playlist-del-btn" data-remove="${idx}" title="Remove track">✕</button>
+        <button class="playlist-del-btn" type="button" title="Remove track">✕</button>
       `;
 
-      // Tap row to jump straight to that song
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.playlist-del-btn')) return;
+      row.querySelector('.playlist-item-info').addEventListener('click', () => {
         loadTrack(idx, true);
+      });
+
+      row.querySelector('.playlist-del-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        playlist.splice(idx, 1);
+        if (currentTrackIndex >= playlist.length) currentTrackIndex = Math.max(0, playlist.length - 1);
+        savePlaylistToDB();
+        renderPlaylist();
+        if (playlist.length === 0) {
+          audioEl.pause();
+          audioEl.removeAttribute('src');
+          playBtn.textContent = '▶';
+          trackNameEl.textContent = 'Queue cleared';
+        }
       });
 
       playlistList.appendChild(row);
     });
 
-    // Clear all button at bottom of drawer
     const footer = document.createElement('div');
     footer.className = 'playlist-footer';
-    footer.innerHTML = `<button class="clear-queue-btn" id="clearQueueBtn">Clear All</button>`;
-    playlistList.appendChild(footer);
-
-    footer.querySelector('#clearQueueBtn').addEventListener('click', async () => {
-      playlist.forEach((t) => {
-        if (!t.isRemote) URL.revokeObjectURL(t.url);
-      });
+    footer.innerHTML = `<button class="clear-queue-btn" type="button">Clear All Tracks</button>`;
+    footer.querySelector('.clear-queue-btn').addEventListener('click', () => {
       playlist = [];
       currentTrackIndex = 0;
-      await clearTracksDB();
-      if (!isSynthActive) {
-        audioEl.pause();
-        audioEl.removeAttribute('src');
-        playBtn.textContent = '▶';
-        trackNameEl.textContent = 'Tap "Test Synth", "Archive URL", or load MP3s';
-      }
+      audioEl.pause();
+      audioEl.removeAttribute('src');
+      playBtn.textContent = '▶';
+      trackNameEl.textContent = 'Queue cleared';
+      savePlaylistToDB();
       renderPlaylist();
-      showToast('Saved playlist cleared');
     });
-
-    // Individual track remove handlers
-    playlistList.querySelectorAll('.playlist-del-btn').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const removeIdx = parseInt(btn.dataset.remove, 10);
-        const wasPlaying = !audioEl.paused && !isSynthActive;
-        const removedTrack = playlist[removeIdx];
-        if (!removedTrack.isRemote) URL.revokeObjectURL(removedTrack.url);
-        await deleteTrackFromDB(removedTrack.id);
-        playlist.splice(removeIdx, 1);
-
-        if (!playlist.length) {
-          currentTrackIndex = 0;
-          if (!isSynthActive) {
-            audioEl.pause();
-            audioEl.removeAttribute('src');
-            playBtn.textContent = '▶';
-            trackNameEl.textContent = 'Tap "Test Synth", "Archive URL", or load MP3s';
-          }
-        } else if (removeIdx === currentTrackIndex) {
-          currentTrackIndex = removeIdx % playlist.length;
-          loadTrack(currentTrackIndex, wasPlaying);
-        } else if (removeIdx < currentTrackIndex) {
-          currentTrackIndex--;
-          const curr = playlist[currentTrackIndex];
-          trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${curr.name}`;
-        } else {
-          const curr = playlist[currentTrackIndex];
-          trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${curr.name}`;
-        }
-
-        renderPlaylist();
-      });
-    });
+    playlistList.appendChild(footer);
   }
 
   playlistToggleBtn.addEventListener('click', () => {
@@ -1480,221 +1218,166 @@
     playlistChevron.textContent = isOpen ? '▲' : '▼';
   });
 
-  // --- INTERNET ARCHIVE & CLOUD URL IMPORTER ---
-  cloudToggleBtn.addEventListener('click', () => {
-    const isOpen = cloudBox.classList.toggle('open');
-    cloudToggleBtn.classList.toggle('active', isOpen);
-    if (isOpen) cloudUrlInput.focus();
-  });
-
-  async function importFromCloudUrl() {
-    const rawUrl = cloudUrlInput.value.trim();
-    if (!rawUrl) {
-      showToast('Paste an Archive.org or .mp3 URL first');
-      return;
-    }
-
-    cloudImportBtn.disabled = true;
-    cloudImportBtn.textContent = 'Loading...';
-
-    try {
-      const importedTracks = [];
-
-      // Check if it's an Internet Archive item URL (e.g. archive.org/details/<id> or archive.org/metadata/<id>)
-      const archiveMatch = rawUrl.match(/archive\.org\/(?:details|metadata|download)\/([^/?#]+)/i);
-
-      if (archiveMatch && !rawUrl.match(/\.(mp3|m4a|ogg|wav)$/i)) {
-        const identifier = archiveMatch[1];
-        const metaUrl = `https://archive.org/metadata/${encodeURIComponent(identifier)}`;
-        const res = await fetch(metaUrl);
-        if (!res.ok) throw new Error('Could not reach Internet Archive item');
-
-        const data = await res.json();
-        const files = data.files || [];
-
-        // Filter for audio files (prefer original MP3s, avoid derivative duplicates if originals exist)
-        const audioFiles = files.filter((f) =>
-          f.name && /\.(mp3|m4a|ogg|wav)$/i.test(f.name) && f.source !== 'derivative'
-        );
-        const fallbackFiles = audioFiles.length
-          ? audioFiles
-          : files.filter((f) => f.name && /\.(mp3|m4a|ogg|wav)$/i.test(f.name));
-
-        if (!fallbackFiles.length) {
-          throw new Error('No MP3/audio files found in that Archive item');
-        }
-
-        // Sort alphabetically / by track number
-        fallbackFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-
-        for (const f of fallbackFiles) {
-          const cleanTitle = (f.title || f.name)
-            .replace(/^.*\//, '')
-            .replace(/\.[^/.]+$/, '');
-          const streamUrl = `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURI(f.name)}`;
-          const dbId = await saveTrackToDB(cleanTitle, streamUrl, true);
-          importedTracks.push({
-            id: dbId,
-            name: `☁ ${cleanTitle}`,
-            url: streamUrl,
-            isRemote: true
-          });
-        }
-      } else {
-        // Treat as a direct audio file URL
-        const cleanTitle = decodeURIComponent(rawUrl.split('/').pop().split('?')[0] || 'Cloud Track')
-          .replace(/\.[^/.]+$/, '');
-        const dbId = await saveTrackToDB(cleanTitle, rawUrl, true);
-        importedTracks.push({
-          id: dbId,
-          name: `☁ ${cleanTitle}`,
-          url: rawUrl,
-          isRemote: true
-        });
-      }
-
-      const wasEmpty = playlist.length === 0;
-      playlist = playlist.concat(importedTracks);
-
-      playlistDrawer.classList.add('open');
-      playlistChevron.textContent = '▲';
-      cloudBox.classList.remove('open');
-      cloudToggleBtn.classList.remove('active');
-      cloudUrlInput.value = '';
-
-      if (wasEmpty) {
-        stopDemoSynth(true);
-        currentTrackIndex = 0;
-        loadTrack(0, true);
-      } else {
-        const curr = playlist[currentTrackIndex];
-        if (!isSynthActive && curr) {
-          trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${curr.name}`;
-        }
+  function updateMediaSession(trackTitle) {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: trackTitle,
+        artist: 'SpeedVolume Player',
+        album: 'Ride Mix'
+      });
+      navigator.mediaSession.setActionHandler('play', () => {
+        initAudioEngine();
+        audioEl.play();
+        playBtn.textContent = '⏸';
         renderPlaylist();
-      }
-
-      showToast(`Imported ${importedTracks.length} cloud track${importedTracks.length > 1 ? 's' : ''}`);
-    } catch (err) {
-      showToast(err.message || 'Failed to load URL');
-    } finally {
-      cloudImportBtn.disabled = false;
-      cloudImportBtn.textContent = 'Fetch';
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        audioEl.pause();
+        playBtn.textContent = '▶';
+        renderPlaylist();
+      });
+      navigator.mediaSession.setActionHandler('previoustrack', () => loadTrack(currentTrackIndex - 1, true));
+      navigator.mediaSession.setActionHandler('nexttrack', () => loadTrack(currentTrackIndex + 1, true));
     }
   }
 
-  cloudImportBtn.addEventListener('click', importFromCloudUrl);
-  cloudUrlInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') importFromCloudUrl();
-  });
-
-  fileInput.addEventListener('change', async (e) => {
-    const files = Array.from(e.target.files);
-    if (!files.length) return;
-    const wasEmpty = playlist.length === 0;
-
-    const newTracks = [];
-    for (const file of files) {
-      const cleanName = file.name.replace(/\.[^/.]+$/, '');
-      const dbId = await saveTrackToDB(cleanName, file, false);
-      newTracks.push({
-        id: dbId,
-        name: cleanName,
-        url: URL.createObjectURL(file),
-        isRemote: false
-      });
-    }
-
-    playlist = playlist.concat(newTracks);
-
-    // Automatically open the playlist drawer so you can see your uploaded tracks
-    playlistDrawer.classList.add('open');
-    playlistChevron.textContent = '▲';
-
-    if (wasEmpty) {
-      stopDemoSynth(true);
-      currentTrackIndex = 0;
-      loadTrack(0, true);
-    } else {
-      const curr = playlist[currentTrackIndex];
-      if (!isSynthActive && curr) {
-        trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${curr.name}`;
-      }
-      renderPlaylist();
-    }
-
-    fileInput.value = '';
-    showToast(`Saved ${newTracks.length} track${newTracks.length > 1 ? 's' : ''} offline`);
-  });
-
   function loadTrack(index, autoplay = false) {
     if (!playlist.length) return;
-    stopDemoSynth(true);
+    stopSynth();
     currentTrackIndex = (index + playlist.length) % playlist.length;
     const track = playlist[currentTrackIndex];
     audioEl.src = track.url;
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
-    renderPlaylist();
-
-    setupMediaSession(track.name, track.isRemote ? 'Internet Archive Stream' : 'Offline Library', false);
+    updateMediaSession(track.name);
 
     if (autoplay) {
       initAudioEngine();
       audioEl.play().then(() => {
         playBtn.textContent = '⏸';
         renderPlaylist();
-        refreshCurrentVolume();
-      }).catch((err) => {
-        console.warn('Playback blocked:', err);
+      }).catch(() => {
+        showToast('Tap Play to start audio');
       });
+    } else {
+      renderPlaylist();
     }
   }
 
-  demoSynthBtn.addEventListener('click', () => {
-    if (isSynthActive) {
-      stopDemoSynth();
-    } else {
-      startDemoSynth();
-    }
+  fileInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    const wasEmpty = playlist.length === 0;
+    files.forEach((file) => {
+      playlist.push({
+        name: file.name.replace(/\.[^/.]+$/, ''),
+        blob: file,
+        url: URL.createObjectURL(file)
+      });
+    });
+    savePlaylistToDB();
+    playlistDrawer.classList.add('open');
+    playlistChevron.textContent = '▲';
     renderPlaylist();
+    showToast(`Added ${files.length} ${files.length === 1 ? 'track' : 'tracks'}`);
+    if (wasEmpty) {
+      loadTrack(0, true);
+    }
+    fileInput.value = '';
   });
 
+  // --- INTERNET ARCHIVE & CLOUD URL IMPORTER ---
+  const DEFAULT_ARCHIVE_URL = 'https://archive.org/details/my-motorcycle-ride-mix';
+  cloudUrlInput.value = localStorage.getItem('sv_last_archive_url') || DEFAULT_ARCHIVE_URL;
+
+  cloudToggleBtn.addEventListener('click', () => {
+    cloudBox.classList.toggle('open');
+    cloudToggleBtn.classList.toggle('active');
+  });
+
+  async function importArchiveUrl(rawUrl, silent = false) {
+    if (!rawUrl) {
+      if (!silent) showToast('Paste an Archive.org or MP3 URL first');
+      return;
+    }
+
+    cloudImportBtn.disabled = true;
+    cloudImportBtn.textContent = '...';
+
+    try {
+      const wasEmpty = playlist.length === 0;
+      const archiveMatch = rawUrl.match(/archive\.org\/(?:details|download)\/([^/?#]+)/i);
+
+      if (archiveMatch) {
+        const identifier = archiveMatch[1];
+        const metaRes = await fetch(`https://archive.org/metadata/${identifier}`);
+        const meta = await metaRes.json();
+        const files = (meta.files || []).filter((f) => /\.(mp3|m4a|ogg|wav)$/i.test(f.name));
+
+        if (!files.length) {
+          if (!silent) showToast('No audio files found in that Archive item');
+        } else {
+          files.sort((a, b) => a.name.localeCompare(b.name));
+          files.forEach((f) => {
+            const cleanName = (f.title || f.name).replace(/\.[^/.]+$/, '');
+            const streamUrl = `https://archive.org/download/${identifier}/${encodeURIComponent(f.name)}`;
+            playlist.push({ name: cleanName, remoteUrl: streamUrl, url: streamUrl });
+          });
+          localStorage.setItem('sv_last_archive_url', rawUrl);
+          savePlaylistToDB();
+          playlistDrawer.classList.add('open');
+          playlistChevron.textContent = '▲';
+          renderPlaylist();
+          if (!silent) showToast(`Imported ${files.length} tracks from Archive.org`);
+          if (wasEmpty) loadTrack(0, !silent);
+        }
+      } else {
+        const fileName = decodeURIComponent(rawUrl.split('/').pop().split('?')[0] || 'Cloud Track').replace(/\.[^/.]+$/, '');
+        playlist.push({ name: fileName, remoteUrl: rawUrl, url: rawUrl });
+        localStorage.setItem('sv_last_archive_url', rawUrl);
+        savePlaylistToDB();
+        playlistDrawer.classList.add('open');
+        playlistChevron.textContent = '▲';
+        renderPlaylist();
+        if (!silent) showToast('Added stream URL to queue');
+        if (wasEmpty) loadTrack(0, !silent);
+      }
+    } catch (err) {
+      if (!silent) showToast('Could not fetch URL — check link & connection');
+    } finally {
+      cloudImportBtn.disabled = false;
+      cloudImportBtn.textContent = 'Fetch';
+    }
+  }
+
+  cloudImportBtn.addEventListener('click', () => {
+    importArchiveUrl(cloudUrlInput.value.trim(), false);
+  });
+
+  // --- TRANSPORT CONTROLS ---
   playBtn.addEventListener('click', () => {
-    if (isSynthActive) {
-      stopDemoSynth();
-      renderPlaylist();
+    if (synthPlaying) {
+      stopSynth();
+      trackNameEl.textContent = playlist.length ? playlist[currentTrackIndex].name : 'Synth paused';
       return;
     }
     if (!playlist.length) {
-      startDemoSynth();
-      renderPlaylist();
+      startSynth();
       return;
     }
     initAudioEngine();
     if (audioEl.paused) {
       audioEl.play();
       playBtn.textContent = '⏸';
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-      refreshCurrentVolume();
     } else {
       audioEl.pause();
       playBtn.textContent = '▶';
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     }
     renderPlaylist();
   });
 
-  nextBtn.addEventListener('click', () => {
-    if (playlist.length) loadTrack(currentTrackIndex + 1, !audioEl.paused);
-  });
-
-  prevBtn.addEventListener('click', () => {
-    if (playlist.length) loadTrack(currentTrackIndex - 1, !audioEl.paused);
-  });
-
-  audioEl.addEventListener('ended', () => {
-    if (playlist.length) loadTrack(currentTrackIndex + 1, true);
-  });
+  nextBtn.addEventListener('click', () => loadTrack(currentTrackIndex + 1, !audioEl.paused));
+  prevBtn.addEventListener('click', () => loadTrack(currentTrackIndex - 1, !audioEl.paused));
+  audioEl.addEventListener('ended', () => loadTrack(currentTrackIndex + 1, true));
 
   // --- GPS & WAKE LOCK ---
   async function requestWakeLock() {
@@ -1707,8 +1390,178 @@
     }
   }
 
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && watchId !== null) {
-      requestWakeLock();
+  gpsBtn.addEventListener('click', () => {
+    initAudioEngine();
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      gpsBtn.textContent = 'Start GPS';
+      gpsBtn.classList.remove('active');
+      gpsStatus.textContent = 'GPS stopped.';
+      if (wakeLock) {
+        wakeLock.release().catch(() => {});
+        wakeLock = null;
+      }
+      return;
+    }
+
+    if (!('geolocation' in navigator)) {
+      gpsStatus.textContent = 'Geolocation not supported on this device.';
+      return;
+    }
+
+    if (simToggle.checked) {
+      simToggle.checked = false;
+      showToast('Simulator override disabled for live GPS');
+    }
+
+    requestWakeLock();
+    gpsBtn.textContent = 'GPS Active';
+    gpsBtn.classList.add('active');
+    gpsStatus.textContent = 'Acquiring GPS satellites...';
+
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        if (simToggle.checked) return;
+        const mps = pos.coords.speed;
+        const acc = Math.round(pos.coords.accuracy);
+        if (mps === null || mps < 0) {
+          gpsStatus.textContent = `GPS locked (±${acc}m) — waiting for movement`;
+          updateSpeed(0);
+          return;
+        }
+        const converted = unit === 'kmh' ? mps * 3.6 : mps * 2.23694;
+        gpsStatus.textContent = `GPS signal strong (±${acc}m accuracy)`;
+        updateSpeed(converted);
+      },
+      (err) => {
+        gpsStatus.textContent = `GPS Error: ${err.message}`;
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+    );
+  });
+
+  // --- UNIT, SMOOTHING & SIMULATOR CONTROLS ---
+  unitBtn.addEventListener('click', () => {
+    unit = unit === 'kmh' ? 'mph' : 'kmh';
+    const label = unit === 'kmh' ? 'km/h' : 'mph';
+    unitBtn.textContent = label;
+    speedUnitLabel.textContent = `Speed (${label})`;
+    simSpeedLabel.textContent = `${simSlider.value} ${label}`;
+    saveSettings();
+    renderIntervals();
+    showToast(`Switched to ${label}`);
+  });
+
+  smoothSlider.value = smoothingSeconds;
+  smoothVal.textContent = `${smoothingSeconds.toFixed(1)}s`;
+  smoothSlider.addEventListener('input', (e) => {
+    smoothingSeconds = parseFloat(e.target.value);
+    smoothVal.textContent = `${smoothingSeconds.toFixed(1)}s`;
+    saveSettings();
+  });
+
+  simToggle.addEventListener('change', () => {
+    if (simToggle.checked) {
+      const val = parseFloat(simSlider.value);
+      gpsStatus.textContent = 'Simulator override enabled. Drag slider to test.';
+      filteredSpeed = val;
+      speedDisplay.textContent = val;
+      refreshCurrentVolume();
+    } else {
+      gpsStatus.textContent = watchId !== null ? 'Live GPS active.' : 'GPS idle. Tap "Start GPS" before riding.';
     }
   });
+
+  simSlider.addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    const label = unit === 'kmh' ? 'km/h' : 'mph';
+    simSpeedLabel.textContent = `${val} ${label}`;
+    if (simToggle.checked) {
+      initAudioEngine();
+      filteredSpeed = val;
+      speedDisplay.textContent = val;
+      const targetVol = calculateVolumeForSpeed(val);
+      applySmoothVolume(targetVol);
+      updateGraph(val, targetVol);
+    }
+  });
+
+  // --- CUSTOM APP ICON & MANIFEST GENERATOR ---
+  function generateCustomAppIcons() {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 512;
+      const ctx = canvas.getContext('2d');
+
+      const bgGrad = ctx.createLinearGradient(0, 0, 512, 512);
+      bgGrad.addColorStop(0, '#1e293b');
+      bgGrad.addColorStop(1, '#090d16');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, 512, 512);
+
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 22;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(256, 275, 165, Math.PI * 0.8, Math.PI * 2.2);
+      ctx.stroke();
+
+      const arcGrad = ctx.createLinearGradient(90, 275, 420, 275);
+      arcGrad.addColorStop(0, '#38bdf8');
+      arcGrad.addColorStop(0.5, '#f97316');
+      arcGrad.addColorStop(1, '#fb923c');
+      ctx.strokeStyle = arcGrad;
+      ctx.beginPath();
+      ctx.arc(256, 275, 165, Math.PI * 0.8, Math.PI * 1.85);
+      ctx.stroke();
+
+      const bars = [55, 95, 140, 110, 70];
+      const barWidth = 22;
+      const gap = 14;
+      const startX = 256 - ((bars.length * barWidth + (bars.length - 1) * gap) / 2);
+      bars.forEach((h, i) => {
+        ctx.fillStyle = i >= 2 ? '#f97316' : '#38bdf8';
+        ctx.beginPath();
+        ctx.roundRect(startX + i * (barWidth + gap), 330 - h, barWidth, h, 8);
+        ctx.fill();
+      });
+
+      const iconDataUrl = canvas.toDataURL('image/png');
+      document.getElementById('appleTouchIcon').href = iconDataUrl;
+      document.getElementById('appFavicon').href = iconDataUrl;
+
+      const manifest = {
+        name: 'SpeedVolume Player',
+        short_name: 'SpeedVol',
+        start_url: '.',
+        display: 'standalone',
+        background_color: '#0f172a',
+        theme_color: '#0f172a',
+        icons: [{ src: iconDataUrl, sizes: '512x512', type: 'image/png' }]
+      };
+      const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+      document.getElementById('dynamicManifest').href = URL.createObjectURL(manifestBlob);
+    } catch (e) {}
+  }
+
+  // --- INITIALIZE APP ---
+  generateCustomAppIcons();
+  const initialUnitLabel = unit === 'kmh' ? 'km/h' : 'mph';
+  unitBtn.textContent = initialUnitLabel;
+  speedUnitLabel.textContent = `Speed (${initialUnitLabel})`;
+  simSpeedLabel.textContent = `${simSlider.value} ${initialUnitLabel}`;
+
+  renderIntervals();
+  renderPlaylist();
+  restoreSavedPlaylist().then(() => {
+    setTimeout(() => {
+      if (playlist.length === 0 && cloudUrlInput.value.trim()) {
+        importArchiveUrl(cloudUrlInput.value.trim(), true);
+      }
+    }, 300);
+  });
+</script>
+</body>
+</html>
