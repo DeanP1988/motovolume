@@ -319,6 +319,17 @@
     button.ctrl:active {
       transform: scale(0.94);
     }
+    button.ctrl.shuffle {
+      width: 38px;
+      height: 38px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    button.ctrl.shuffle.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
     button.ctrl.play {
       width: 56px;
       height: 56px;
@@ -755,7 +766,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.6)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.7)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="rideLockBtn" class="pill" title="OLED Pocket Lock">🔒 Lock</button>
@@ -806,6 +817,7 @@
 
       <div id="trackName" class="track-name">Tap "Test Synth", "Archive URL", or load MP3s</div>
       <div class="transport">
+        <button class="ctrl shuffle active" id="shuffleBtn" title="Shuffle Playback">🔀</button>
         <button class="ctrl" id="prevBtn" title="Previous">⏮</button>
         <button class="ctrl play" id="playBtn" title="Play / Pause">▶</button>
         <button class="ctrl" id="nextBtn" title="Next">⏭</button>
@@ -950,6 +962,7 @@
   const audioEl = document.getElementById('audioEl');
   const nextAudioEl = document.getElementById('nextAudioEl');
   const bgAudioEl = document.getElementById('bgAudioEl');
+  const shuffleBtn = document.getElementById('shuffleBtn');
   const playBtn = document.getElementById('playBtn');
   const nextBtn = document.getElementById('nextBtn');
   const prevBtn = document.getElementById('prevBtn');
@@ -1003,6 +1016,13 @@
   let stagedTrackIndex = -1;
   let isUsingBgAudio = false;
   let activePlayRequestId = 0;
+  let isShuffleEnabled = localStorage.getItem('sv_shuffle') !== 'false';
+  let shuffleHistory = [];
+  let shuffleBag = [];
+
+  if (shuffleBtn) {
+    shuffleBtn.classList.toggle('active', isShuffleEnabled);
+  }
 
   let toastTimer = null;
   function showToast(msg) {
@@ -1158,12 +1178,43 @@
   });
 
   // --- TRACK LOADING & PLAYBACK ---
+  function refillShuffleBag(excludeIdx = -1) {
+    shuffleBag = playlist.map((_, i) => i).filter((i) => i !== excludeIdx);
+    for (let i = shuffleBag.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffleBag[i], shuffleBag[j]] = [shuffleBag[j], shuffleBag[i]];
+    }
+  }
+
+  function peekNextTrackIndex(currentIndex) {
+    if (playlist.length <= 1) return 0;
+    if (!isShuffleEnabled) {
+      return (currentIndex + 1) % playlist.length;
+    }
+    // Filter out invalid indices or current track
+    shuffleBag = shuffleBag.filter((i) => i >= 0 && i < playlist.length && i !== currentIndex);
+    if (shuffleBag.length === 0) {
+      refillShuffleBag(currentIndex);
+    }
+    return shuffleBag[0];
+  }
+
+  function consumeNextTrackIndex(currentIndex) {
+    if (playlist.length <= 1) return 0;
+    if (!isShuffleEnabled) {
+      return (currentIndex + 1) % playlist.length;
+    }
+    const nextIdx = peekNextTrackIndex(currentIndex);
+    shuffleBag.shift();
+    return nextIdx;
+  }
+
   function stageNextDeck(currentIndex) {
     if (playlist.length <= 1) {
       stagedTrackIndex = -1;
       return;
     }
-    const nextIdx = (currentIndex + 1) % playlist.length;
+    const nextIdx = peekNextTrackIndex(currentIndex);
     const nextTrack = playlist[nextIdx];
     if (!nextTrack || stagedTrackIndex === nextIdx) return;
 
@@ -1174,9 +1225,14 @@
     standbyDeck.src = nextTrack.url;
   }
 
-  function loadTrack(index, autoPlay = false) {
+  function loadTrack(index, autoPlay = false, recordHistory = false) {
     if (!playlist.length) return;
     if (synthPlaying) stopDemoSynth();
+
+    if (recordHistory && currentTrackIndex >= 0 && currentTrackIndex < playlist.length) {
+      shuffleHistory.push(currentTrackIndex);
+      if (shuffleHistory.length > 50) shuffleHistory.shift();
+    }
 
     const targetIdx = ((index % playlist.length) + playlist.length) % playlist.length;
     const track = playlist[targetIdx];
@@ -1332,7 +1388,8 @@
     });
     deck.addEventListener('ended', () => {
       if (deck === activeDeck && playlist.length > 0 && !isUsingBgAudio) {
-        loadTrack(currentTrackIndex + 1, true);
+        const nextIdx = consumeNextTrackIndex(currentTrackIndex);
+        loadTrack(nextIdx, true, true);
       }
     });
   });
@@ -1350,7 +1407,7 @@
 
   bgAudioEl.addEventListener('ended', () => {
     if (playlist.length > 0 && isUsingBgAudio) {
-      currentTrackIndex = (currentTrackIndex + 1) % playlist.length;
+      currentTrackIndex = consumeNextTrackIndex(currentTrackIndex);
       const nextTrack = playlist[currentTrackIndex];
       if (nextTrack) {
         trackNameEl.textContent = nextTrack.name;
@@ -1361,6 +1418,18 @@
         renderPlaylist();
       }
     }
+  });
+
+  shuffleBtn.addEventListener('click', () => {
+    isShuffleEnabled = !isShuffleEnabled;
+    localStorage.setItem('sv_shuffle', String(isShuffleEnabled));
+    shuffleBtn.classList.toggle('active', isShuffleEnabled);
+    shuffleBag = [];
+    stagedTrackIndex = -1;
+    if (isTrackPlaying && playlist.length > 1) {
+      stageNextDeck(currentTrackIndex);
+    }
+    showToast(isShuffleEnabled ? '🔀 Shuffle ON' : 'Sequential order');
   });
 
   playBtn.addEventListener('click', () => {
@@ -1381,12 +1450,18 @@
 
   prevBtn.addEventListener('click', () => {
     if (!playlist.length) return;
-    loadTrack(currentTrackIndex - 1, true);
+    if (isShuffleEnabled && shuffleHistory.length > 0) {
+      const prevIdx = shuffleHistory.pop();
+      loadTrack(prevIdx, true, false);
+    } else {
+      loadTrack(currentTrackIndex - 1, true, false);
+    }
   });
 
   nextBtn.addEventListener('click', () => {
     if (!playlist.length) return;
-    loadTrack(currentTrackIndex + 1, true);
+    const nextIdx = consumeNextTrackIndex(currentTrackIndex);
+    loadTrack(nextIdx, true, true);
   });
 
   // --- PERSISTENT PLAYLIST STORAGE (IndexedDB for MP3s + Cloud URLs) ---
@@ -1440,7 +1515,8 @@
               isCloud: false
             };
           });
-          loadTrack(0, false);
+          const startIdx = isShuffleEnabled ? Math.floor(Math.random() * playlist.length) : 0;
+          loadTrack(startIdx, false);
         } else {
           renderPlaylist();
           const defaultArchiveUrl = cloudUrlInput.value.trim();
@@ -1612,7 +1688,10 @@
 
       savePlaylistToDB();
       renderPlaylist();
-      if (wasEmpty) loadTrack(0, false);
+      if (wasEmpty) {
+        const startIdx = isShuffleEnabled ? Math.floor(Math.random() * playlist.length) : 0;
+        loadTrack(startIdx, false);
+      }
       if (!silent) showToast(`Imported ${audioFiles.length} track${audioFiles.length > 1 ? 's' : ''}`);
     } catch (err) {
       if (!silent) showToast(err.message || 'Failed to fetch Archive URL');
