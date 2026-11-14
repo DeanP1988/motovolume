@@ -715,7 +715,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.3)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.4)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="rideLockBtn" class="pill" title="OLED Pocket Lock">🔒 Lock</button>
@@ -780,8 +780,7 @@
         <div id="playlistList"></div>
       </div>
 
-      <audio id="audioEl" playsinline preload="auto" crossorigin="anonymous"></audio>
-      <audio id="preloadAudioEl" playsinline preload="auto" muted></audio>
+      <audio id="audioEl" playsinline preload="none" crossorigin="anonymous"></audio>
       <audio id="bgAudioEl" playsinline preload="none"></audio>
     </div>
 
@@ -908,7 +907,6 @@
 
   // --- DOM REFERENCES ---
   const audioEl = document.getElementById('audioEl');
-  const preloadAudioEl = document.getElementById('preloadAudioEl');
   const bgAudioEl = document.getElementById('bgAudioEl');
   const playBtn = document.getElementById('playBtn');
   const nextBtn = document.getElementById('nextBtn');
@@ -960,7 +958,7 @@
   let mediaSourceNode = null;
   let isUsingBgAudio = false;
   let bgSyncTimer = null;
-  let prewarmedBlobMap = new Map(); // url -> local blobUrl for instant iOS Safari switching
+  let activePlayRequestId = 0;
 
   let toastTimer = null;
   function showToast(msg) {
@@ -1009,101 +1007,6 @@
     }
   }
 
-  // Pre-decode track into AudioBuffer in background for Lock Screen volume matching
-  async function preDecodeTrackForLockScreen(url, fileObj = null) {
-    if (!url || url === cachedDecodedTrackUrl) return;
-    cachedDecodedTrackUrl = url;
-    cachedDecodedBuffer = null;
-    try {
-      initAudioEngine();
-      let arrayBuf;
-      if (fileObj) {
-        arrayBuf = await fileObj.arrayBuffer();
-      } else {
-        const resp = await fetch(url, { mode: 'cors', redirect: 'follow' });
-        if (!resp.ok) return;
-        arrayBuf = await resp.arrayBuffer();
-      }
-      if (cachedDecodedTrackUrl !== url) return;
-      cachedDecodedBuffer = await audioCtx.decodeAudioData(arrayBuf);
-      refreshScaledBlobInBackground(true);
-    } catch (e) {
-      cachedDecodedBuffer = null;
-    }
-  }
-
-  function refreshScaledBlobInBackground(forceSwap = false) {
-    if (!cachedDecodedBuffer) return;
-    const spd = simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed;
-    const volPct = calculateVolumeForSpeed(spd);
-    const gainScalar = volPct <= 0 ? 0.0001 : Math.pow(volPct / 100, 1.6);
-    if (!forceSwap && scaledBlobGainScalar !== null && Math.abs(scaledBlobGainScalar - gainScalar) < 0.01 && activeScaledBlobUrl) {
-      return;
-    }
-    const oldBlob = activeScaledBlobUrl;
-    activeScaledBlobUrl = buildGainScaledWavBlobUrl(cachedDecodedBuffer, gainScalar);
-    scaledBlobGainScalar = gainScalar;
-
-    if (isTrackPlaying && !document.hidden && !isUsingBgAudio) {
-      const syncPos = audioEl.currentTime || 0;
-      bgAudioEl.src = activeScaledBlobUrl;
-      bgAudioEl.currentTime = syncPos;
-    }
-    if (oldBlob) {
-      setTimeout(() => URL.revokeObjectURL(oldBlob), 1500);
-    }
-  }
-
-  // Encode a decoded AudioBuffer into a gain-scaled PCM WAV Blob URL for Lock Screen playback
-  function buildGainScaledWavBlobUrl(audioBuffer, gainScalar) {
-    const numChannels = audioBuffer.numberOfChannels;
-    const sampleRate = audioBuffer.sampleRate;
-    const length = audioBuffer.length;
-    const bytesPerSample = 2;
-    const blockAlign = numChannels * bytesPerSample;
-    const byteRate = sampleRate * blockAlign;
-    const dataSize = length * blockAlign;
-    const buffer = new ArrayBuffer(44 + dataSize);
-    const view = new DataView(buffer);
-
-    const writeString = (offset, str) => {
-      for (let i = 0; i < str.length; i++) {
-        view.setUint8(offset + i, str.charCodeAt(i));
-      }
-    };
-
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + dataSize, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, dataSize, true);
-
-    const channels = [];
-    for (let c = 0; c < numChannels; c++) {
-      channels.push(audioBuffer.getChannelData(c));
-    }
-
-    let offset = 44;
-    for (let i = 0; i < length; i++) {
-      for (let c = 0; c < numChannels; c++) {
-        const sample = Math.max(-1, Math.min(1, channels[c][i] * gainScalar));
-        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-        offset += 2;
-      }
-    }
-
-    const blob = new Blob([buffer], { type: 'audio/wav' });
-    return URL.createObjectURL(blob);
-  }
-
   // Smoothly ramp Web Audio gain and update UI meters
   function applySmoothVolume(targetVolPercent) {
     const clamped = Math.max(0, Math.min(100, targetVolPercent));
@@ -1119,10 +1022,6 @@
       gainNode.gain.cancelScheduledValues(now);
       gainNode.gain.setValueAtTime(gainNode.gain.value, now);
       gainNode.gain.linearRampToValueAtTime(targetGain, now + Math.max(0.08, smoothingSeconds * 0.4));
-    }
-
-    if (cachedDecodedBuffer && !document.hidden) {
-      refreshScaledBlobInBackground(false);
     }
   }
 
@@ -1216,64 +1115,21 @@
     const track = playlist[currentTrackIndex];
     trackNameEl.textContent = track.name;
     originalTrackUrl = track.url;
-    cachedDecodedTrackUrl = null;
-    cachedDecodedBuffer = null;
-    scaledBlobGainScalar = null;
-
-    if (activeScaledBlobUrl) {
-      URL.revokeObjectURL(activeScaledBlobUrl);
-      activeScaledBlobUrl = null;
-    }
 
     audioEl.pause();
     bgAudioEl.pause();
     isTrackPlaying = false;
     isUsingBgAudio = false;
 
-    // Use in-memory pre-cached Blob URL on iOS if available for zero-latency switching
-    const cachedBlob = prewarmedBlobMap.get(track.url);
-    if (cachedBlob) {
-      audioEl.removeAttribute('crossorigin');
-      audioEl.src = cachedBlob;
-    } else {
-      audioEl.crossOrigin = 'anonymous';
-      audioEl.src = track.url;
-    }
+    audioEl.crossOrigin = 'anonymous';
+    audioEl.src = track.url;
 
     playBtn.textContent = '▶';
     updateMediaSession(track);
     renderPlaylist();
-    prewarmNextTrack();
 
     if (autoPlay) {
       playCurrentTrack();
-    }
-  }
-
-  // Pre-cache the next track into a RAM Blob URL so iOS Safari switches instantaneously
-  async function prewarmNextTrack() {
-    if (playlist.length <= 1) return;
-    const nextIdx = (currentTrackIndex + 1) % playlist.length;
-    const nextTrack = playlist[nextIdx];
-    if (!nextTrack || !nextTrack.url || nextTrack.file || prewarmedBlobMap.has(nextTrack.url)) return;
-
-    try {
-      const resp = await fetch(nextTrack.url, { mode: 'cors', redirect: 'follow' });
-      if (!resp.ok) return;
-      const blob = await resp.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      prewarmedBlobMap.set(nextTrack.url, blobUrl);
-
-      // Keep cache bounded to 3 tracks max to preserve iPhone memory
-      if (prewarmedBlobMap.size > 3) {
-        const oldestKey = prewarmedBlobMap.keys().next().value;
-        const oldUrl = prewarmedBlobMap.get(oldestKey);
-        if (oldUrl) URL.revokeObjectURL(oldUrl);
-        prewarmedBlobMap.delete(oldestKey);
-      }
-    } catch (e) {
-      // Fallback to hidden audio element hint if CORS fetch is blocked
-      preloadAudioEl.src = nextTrack.url;
     }
   }
 
@@ -1292,9 +1148,7 @@
         const currentPos = audioEl.currentTime || 0;
         isUsingBgAudio = true;
         audioEl.pause();
-        if (activeScaledBlobUrl) {
-          bgAudioEl.src = activeScaledBlobUrl;
-        } else if (!bgAudioEl.src || bgAudioEl.src !== track.url) {
+        if (!bgAudioEl.src || bgAudioEl.src !== track.url) {
           bgAudioEl.src = track.url;
         }
         try {
@@ -1323,19 +1177,14 @@
     const track = playlist[currentTrackIndex];
     if (!track) return;
 
+    const reqId = ++activePlayRequestId;
     initAudioEngine();
     handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
 
-    const cachedBlob = prewarmedBlobMap.get(track.url);
     if (!audioEl.src || originalTrackUrl !== track.url) {
       originalTrackUrl = track.url;
-      if (cachedBlob) {
-        audioEl.removeAttribute('crossorigin');
-        audioEl.src = cachedBlob;
-      } else {
-        audioEl.crossOrigin = 'anonymous';
-        audioEl.src = track.url;
-      }
+      audioEl.crossOrigin = 'anonymous';
+      audioEl.src = track.url;
     }
 
     const startOffset = isUsingBgAudio ? (bgAudioEl.currentTime || 0) : (audioEl.currentTime || 0);
@@ -1344,34 +1193,33 @@
 
     // Immediate optimistic UI response on tap
     isTrackPlaying = true;
-    playBtn.textContent = cachedBlob ? '⏸' : '⏳';
+    playBtn.textContent = '⏳';
     renderPlaylist();
 
     const playPromise = audioEl.play();
     if (playPromise !== undefined) {
       playPromise.then(() => {
+        if (reqId !== activePlayRequestId) return;
         isTrackPlaying = true;
         playBtn.textContent = '⏸';
         updateMediaSession(track);
         renderPlaylist();
-        prewarmNextTrack();
 
         if (startOffset > 0 && audioEl.readyState >= 1) {
           try {
             audioEl.currentTime = startOffset;
           } catch (e) {}
         }
-
-        preDecodeTrackForLockScreen(cachedBlob || track.url, track.file || null);
       }).catch((err) => {
+        if (reqId !== activePlayRequestId) return;
         if (audioEl.crossOrigin) {
           audioEl.removeAttribute('crossorigin');
           audioEl.src = track.url;
           audioEl.play().then(() => {
+            if (reqId !== activePlayRequestId) return;
             isTrackPlaying = true;
             playBtn.textContent = '⏸';
             renderPlaylist();
-            prewarmNextTrack();
           }).catch(() => {
             isTrackPlaying = false;
             playBtn.textContent = '▶';
