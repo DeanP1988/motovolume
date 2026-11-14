@@ -580,7 +580,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.6)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.7)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="unitBtn" class="pill">km/h</button>
@@ -645,7 +645,7 @@
         <div id="playlistList"></div>
       </div>
 
-      <audio id="audioEl" playsinline preload="auto"></audio>
+      <audio id="audioEl" playsinline preload="none"></audio>
     </div>
 
     <!-- Speed -> Volume Curve + Live Graph -->
@@ -1525,11 +1525,13 @@
     const track = playlist[currentTrackIndex];
     if (!track) return;
 
-    if (!audioEl.src || audioEl.src === window.location.href) {
+    audioEl.muted = false;
+    if (!audioEl.src || audioEl.src === window.location.href || audioEl.dataset.trackUrl !== track.url) {
       audioEl.src = track.url;
+      audioEl.dataset.trackUrl = track.url;
     }
 
-    const startOffset = audioEl.currentTime || bufferPauseOffset || 0;
+    const startOffset = bufferPauseOffset || 0;
     playBtn.textContent = '⏳';
 
     const playPromise = audioEl.play();
@@ -1539,53 +1541,26 @@
         playBtn.textContent = '⏸';
         renderPlaylist();
 
+        if (startOffset > 0 && audioEl.readyState >= 1) {
+          try {
+            audioEl.currentTime = startOffset;
+          } catch (e) {}
+        }
+
         preDecodeTrackForLockScreen(track.url);
 
         if (!document.hidden && cachedDecodedBuffer && cachedDecodedTrackUrl === track.url) {
           if (startBufferPlaybackAt(audioEl.currentTime || startOffset)) {
             audioEl.muted = true;
           }
-        } else {
-          audioEl.muted = false;
         }
       }).catch((err) => {
         isTrackPlaying = false;
         playBtn.textContent = '▶';
-        showToast(`Play blocked: ${err.message || 'Tap Play again'}`);
+        showToast(`Play failed: ${err.message || 'Check connection or track URL'}`);
         console.warn('Playback error:', err);
       });
     }
-  }
-
-  function playCurrentTrack() {
-    if (!playlist.length) {
-      startDemoSynth();
-      return;
-    }
-    if (synthPlaying) stopDemoSynth();
-    initAudioEngine();
-    refreshCurrentVolume();
-
-    const startOffset = audioEl.currentTime || bufferPauseOffset || 0;
-
-    // Always start native audioEl inside user gesture for reliable playback & Lock Screen continuity
-    audioEl.play().then(() => {
-      isTrackPlaying = true;
-      playBtn.textContent = '⏸';
-      renderPlaylist();
-
-      // If decoded buffer is ready in foreground, route audio through GainNode for speed volume control
-      if (!document.hidden && cachedDecodedBuffer) {
-        if (startBufferPlaybackAt(audioEl.currentTime || startOffset)) {
-          audioEl.muted = true;
-        }
-      } else {
-        audioEl.muted = false;
-      }
-    }).catch((err) => {
-      showToast('Unable to start track — tap Play again');
-      console.warn('Playback error:', err);
-    });
   }
 
   function pauseCurrentTrack() {
@@ -1630,6 +1605,17 @@
   audioEl.addEventListener('ended', () => {
     if (playlist.length && !isUsingWebAudioBuffer) {
       loadTrack(currentTrackIndex + 1, true);
+    }
+  });
+
+  audioEl.addEventListener('error', () => {
+    if (isTrackPlaying) {
+      isTrackPlaying = false;
+      playBtn.textContent = '▶';
+      showToast('Stream error — skipping to next track...');
+      if (playlist.length > 1) {
+        setTimeout(() => loadTrack(currentTrackIndex + 1, true), 1200);
+      }
     }
   });
 
