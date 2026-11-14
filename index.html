@@ -580,7 +580,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.4)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.5)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="unitBtn" class="pill">km/h</button>
@@ -645,8 +645,7 @@
         <div id="playlistList"></div>
       </div>
 
-      <audio id="audioEl" crossorigin="anonymous" playsinline preload="auto"></audio>
-      <audio id="bgAudioEl" playsinline preload="auto"></audio>
+      <audio id="audioEl" playsinline preload="auto"></audio>
     </div>
 
     <!-- Speed -> Volume Curve + Live Graph -->
@@ -772,7 +771,6 @@
 
   // --- DOM REFERENCES ---
   const audioEl = document.getElementById('audioEl');
-  const bgAudioEl = document.getElementById('bgAudioEl');
   const playBtn = document.getElementById('playBtn');
   const nextBtn = document.getElementById('nextBtn');
   const prevBtn = document.getElementById('prevBtn');
@@ -804,12 +802,12 @@
   const playlistList = document.getElementById('playlistList');
   const iosToast = document.getElementById('iosToast');
 
-  let mediaElementSource = null;
   let isTrackPlaying = false;
   let cachedDecodedTrackUrl = null;
   let cachedDecodedBuffer = null;
   let activeScaledBlobUrl = null;
   let scaledBlobGainScalar = null;
+  let originalTrackUrl = null;
 
   let toastTimer = null;
   function showToast(msg) {
@@ -834,9 +832,6 @@
       gainNode.gain.setValueAtTime(0.35, audioCtx.currentTime);
       gainNode.connect(audioCtx.destination);
 
-      mediaElementSource = audioCtx.createMediaElementSource(audioEl);
-      mediaElementSource.connect(gainNode);
-
       audioCtx.onstatechange = () => {
         if (audioCtx.state === 'suspended' && (isTrackPlaying || synthPlaying)) {
           audioCtx.resume().catch(() => {});
@@ -849,17 +844,59 @@
     }
   }
 
-  // Pre-decode track into AudioBuffer in background so we can bake exact curve volume for iOS Lock Screen
+  function stopBufferPlayback() {
+    if (bufferSourceNode) {
+      try {
+        bufferSourceNode.onended = null;
+        bufferSourceNode.stop();
+        bufferSourceNode.disconnect();
+      } catch (e) {}
+      bufferSourceNode = null;
+    }
+    isUsingWebAudioBuffer = false;
+  }
+
+  function startBufferPlaybackAt(offsetSeconds) {
+    if (!cachedDecodedBuffer || !audioCtx || !gainNode) return false;
+    stopBufferPlayback();
+    initAudioEngine();
+
+    const safeOffset = Math.max(0, Math.min(cachedDecodedBuffer.duration - 0.05, offsetSeconds || 0));
+    bufferSourceNode = audioCtx.createBufferSource();
+    bufferSourceNode.buffer = cachedDecodedBuffer;
+    bufferSourceNode.connect(gainNode);
+    bufferSourceNode.onended = () => {
+      if (isUsingWebAudioBuffer && isTrackPlaying && !document.hidden) {
+        loadTrack(currentTrackIndex + 1, true);
+      }
+    };
+    bufferSourceNode.start(0, safeOffset);
+    bufferStartTime = audioCtx.currentTime - safeOffset;
+    isUsingWebAudioBuffer = true;
+    return true;
+  }
+
+  // Pre-decode track into AudioBuffer in background so we get smooth foreground gain AND Lock Screen volume matching
   async function preDecodeTrackForLockScreen(url) {
     if (!url || url === cachedDecodedTrackUrl) return;
     cachedDecodedTrackUrl = url;
     cachedDecodedBuffer = null;
     try {
       initAudioEngine();
-      const resp = await fetch(url, { mode: 'cors' });
+      const resp = await fetch(url);
+      if (!resp.ok) return;
       const arrayBuf = await resp.arrayBuffer();
+      if (cachedDecodedTrackUrl !== url) return;
       cachedDecodedBuffer = await audioCtx.decodeAudioData(arrayBuf);
       refreshScaledBlobInBackground();
+
+      // If currently playing via native stream in foreground, switch smoothly to Web Audio Gain buffer
+      if (isTrackPlaying && !document.hidden && !isUsingWebAudioBuffer) {
+        const pos = audioEl.currentTime || 0;
+        if (startBufferPlaybackAt(pos)) {
+          audioEl.muted = true;
+        }
+      }
     } catch (e) {
       cachedDecodedBuffer = null;
     }
@@ -878,10 +915,6 @@
     }
     activeScaledBlobUrl = buildGainScaledWavBlobUrl(cachedDecodedBuffer, gainScalar);
     scaledBlobGainScalar = gainScalar;
-    if (!document.hidden && isTrackPlaying && bgAudioEl.paused) {
-      bgAudioEl.src = activeScaledBlobUrl;
-      bgAudioEl.load();
-    }
   }
 
   // Encode a WAV Blob with the exact Speed -> Volume Curve gain baked into the PCM samples
@@ -902,7 +935,7 @@
 
     writeStr(0, 'RIFF');
     view.setUint32(4, 36 + dataSize, true);
-    writeStr(8, 'WAVE');
+    view.setUint8(8, 87); view.setUint8(9, 65); view.setUint8(10, 86); view.setUint8(11, 69);
     writeStr(12, 'fmt ');
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true);
@@ -932,7 +965,7 @@
     return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
   }
 
-  // Seamless Foreground (Speed-Gain Active) <-> Background (Gain-Scaled Lock Screen Audio) Handoff
+  // Seamless Foreground (Speed-Gain Buffer) <-> Background (Native Lock Screen Audio) Handoff
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && watchId !== null) {
       requestWakeLock();
@@ -943,34 +976,26 @@
     if (!track) return;
 
     if (document.hidden) {
-      if (isTrackPlaying && !audioEl.paused) {
-        const currentPos = audioEl.currentTime || 0;
-        const targetSrc = activeScaledBlobUrl || track.url;
-        if (bgAudioEl.src !== targetSrc) {
-          bgAudioEl.src = targetSrc;
-        }
-        bgAudioEl.muted = false;
+      if (isTrackPlaying) {
+        const currentPos = isUsingWebAudioBuffer && audioCtx
+          ? Math.max(0, audioCtx.currentTime - bufferStartTime)
+          : (audioEl.currentTime || 0);
+        stopBufferPlayback();
+        audioEl.muted = false;
         try {
-          if (Math.abs((bgAudioEl.currentTime || 0) - currentPos) > 0.35) {
-            bgAudioEl.currentTime = currentPos;
+          if (Math.abs((audioEl.currentTime || 0) - currentPos) > 0.4) {
+            audioEl.currentTime = currentPos;
           }
         } catch (e) {}
-        audioEl.pause();
-        bgAudioEl.play().catch(() => {});
+        if (audioEl.paused) {
+          audioEl.play().catch(() => {});
+        }
       }
     } else {
-      if (!bgAudioEl.paused) {
-        const bgPos = bgAudioEl.currentTime || 0;
-        bgAudioEl.pause();
-        bgAudioEl.muted = true;
-        initAudioEngine();
-        try {
-          if (Math.abs((audioEl.currentTime || 0) - bgPos) > 0.35) {
-            audioEl.currentTime = bgPos;
-          }
-        } catch (e) {}
-        if (isTrackPlaying) {
-          audioEl.play().catch(() => {});
+      if (isTrackPlaying && cachedDecodedBuffer && !isUsingWebAudioBuffer) {
+        const currentPos = audioEl.currentTime || 0;
+        if (startBufferPlaybackAt(currentPos)) {
+          audioEl.muted = true;
         }
       }
     }
@@ -1342,8 +1367,8 @@
         }
         renderPlaylist();
         if (!playlist.length) {
+          stopBufferPlayback();
           audioEl.pause();
-          bgAudioEl.pause();
           isTrackPlaying = false;
           playBtn.textContent = '▶';
           trackNameEl.textContent = 'Tap "Test Synth", "Archive URL", or load MP3s';
@@ -1359,8 +1384,8 @@
       playlist = [];
       currentTrackIndex = 0;
       persistPlaylistToDB();
+      stopBufferPlayback();
       audioEl.pause();
-      bgAudioEl.pause();
       isTrackPlaying = false;
       playBtn.textContent = '▶';
       trackNameEl.textContent = 'Queue cleared';
@@ -1459,19 +1484,17 @@
   function loadTrack(index, autoplay = false) {
     if (!playlist.length) return;
     if (synthPlaying) stopDemoSynth();
+    stopBufferPlayback();
 
     currentTrackIndex = (index + playlist.length) % playlist.length;
     const track = playlist[currentTrackIndex];
+    originalTrackUrl = track.url;
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
     renderPlaylist();
 
+    audioEl.muted = false;
     audioEl.src = track.url;
     audioEl.load();
-
-    // Prime bgAudioEl inside user gesture so iOS allows background handoff on screen lock
-    bgAudioEl.src = track.url;
-    bgAudioEl.muted = true;
-    bgAudioEl.load();
 
     preDecodeTrackForLockScreen(track.url);
 
@@ -1501,26 +1524,39 @@
     initAudioEngine();
     refreshCurrentVolume();
 
-    // Unlock bgAudioEl on user tap so iOS permits seamless handoff when screen locks
-    bgAudioEl.muted = true;
-    bgAudioEl.play().then(() => {
-      if (!document.hidden) bgAudioEl.pause();
-    }).catch(() => {});
+    const startOffset = audioEl.currentTime || bufferPauseOffset || 0;
 
+    // Always start native audioEl inside user gesture for reliable playback & Lock Screen continuity
     audioEl.play().then(() => {
       isTrackPlaying = true;
       playBtn.textContent = '⏸';
       renderPlaylist();
+
+      // If decoded buffer is ready in foreground, route audio through GainNode for speed volume control
+      if (!document.hidden && cachedDecodedBuffer) {
+        if (startBufferPlaybackAt(audioEl.currentTime || startOffset)) {
+          audioEl.muted = true;
+        }
+      } else {
+        audioEl.muted = false;
+      }
     }).catch((err) => {
-      showToast('Tap Play again to start audio');
-      console.warn('Playback blocked:', err);
+      showToast('Unable to start track — tap Play again');
+      console.warn('Playback error:', err);
     });
   }
 
   function pauseCurrentTrack() {
+    if (isUsingWebAudioBuffer && audioCtx) {
+      bufferPauseOffset = Math.max(0, audioCtx.currentTime - bufferStartTime);
+      try {
+        audioEl.currentTime = bufferPauseOffset;
+      } catch (e) {}
+    }
+    stopBufferPlayback();
     isTrackPlaying = false;
+    audioEl.muted = false;
     audioEl.pause();
-    bgAudioEl.pause();
     playBtn.textContent = '▶';
     renderPlaylist();
   }
@@ -1550,11 +1586,9 @@
   });
 
   audioEl.addEventListener('ended', () => {
-    if (playlist.length) loadTrack(currentTrackIndex + 1, true);
-  });
-
-  bgAudioEl.addEventListener('ended', () => {
-    if (playlist.length) loadTrack(currentTrackIndex + 1, true);
+    if (playlist.length && !isUsingWebAudioBuffer) {
+      loadTrack(currentTrackIndex + 1, true);
+    }
   });
 
   // --- GPS TRACKING & WAKE LOCK ---
