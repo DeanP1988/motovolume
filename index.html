@@ -580,7 +580,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.0)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.1)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="unitBtn" class="pill">km/h</button>
@@ -1557,6 +1557,8 @@
 
   // --- TRANSPORT CONTROLS ---
   playBtn.addEventListener('click', async () => {
+    initAudioEngine();
+
     if (synthPlaying) {
       stopSynth();
       trackNameEl.textContent = playlist.length ? playlist[currentTrackIndex].name : 'Synth paused';
@@ -1582,23 +1584,47 @@
       }
       audioEl.muted = false;
       playBtn.textContent = '▶';
-    } else {
-      if (!decodedAudioBuffer && playlist[currentTrackIndex]) {
-        await decodeTrackBuffer(playlist[currentTrackIndex]);
-      }
-      if (decodedAudioBuffer) {
-        startBufferPlayback(bufferPauseOffset);
-        applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
-      } else {
-        audioEl.loop = false;
-        audioEl.src = playlist[currentTrackIndex].url;
-        audioEl.currentTime = bufferPauseOffset;
-        audioEl.muted = false;
-        await audioEl.play().catch(() => {});
-      }
-      playBtn.textContent = '⏸';
+      renderPlaylist();
+      return;
     }
+
+    const track = playlist[currentTrackIndex];
+    if (!track) return;
+
+    // Immediately unlock iOS audio playback directly inside the click gesture
+    playBtn.textContent = '⏸';
     renderPlaylist();
+
+    if (decodedAudioBuffer) {
+      startBufferPlayback(bufferPauseOffset);
+      applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
+      renderPlaylist();
+      return;
+    }
+
+    // Start streaming immediately so audio plays right away while buffer decodes
+    audioEl.loop = false;
+    audioEl.src = track.url;
+    audioEl.currentTime = bufferPauseOffset;
+    audioEl.muted = false;
+    try {
+      await audioEl.play();
+    } catch (err) {
+      playBtn.textContent = '▶';
+      showToast('Unable to play track — check connection');
+      renderPlaylist();
+      return;
+    }
+
+    // Decode in background for speed-based GainNode volume ramping
+    decodeTrackBuffer(track).then(() => {
+      if (decodedAudioBuffer && !audioEl.paused && audioEl.src !== silentKeepAliveUrl && !synthPlaying) {
+        const currentPos = audioEl.currentTime;
+        startBufferPlayback(currentPos);
+        applySmoothVolume(calculateVolumeForSpeed(filteredSpeed));
+        renderPlaylist();
+      }
+    });
   });
 
   nextBtn.addEventListener('click', () => loadTrack(currentTrackIndex + 1, isUsingWebAudioBuffer || (!audioEl.paused && audioEl.src !== silentKeepAliveUrl)));
