@@ -568,6 +568,116 @@
       opacity: 1;
       transform: translateX(-50%) translateY(0);
     }
+
+    /* OLED Pocket / Ride Lock Overlay */
+    .ride-lock-overlay {
+      position: fixed;
+      inset: 0;
+      background: #000000;
+      z-index: 9999;
+      display: none;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: calc(env(safe-area-inset-top) + 32px) 24px calc(env(safe-area-inset-bottom) + 36px);
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+    .ride-lock-overlay.active {
+      display: flex;
+    }
+    .ride-lock-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #475569;
+    }
+    .ride-lock-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+    }
+    .ride-lock-telemetry {
+      text-align: center;
+      transition: transform 1.2s ease-in-out;
+    }
+    .ride-lock-speed {
+      font-size: 4.5rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      color: #334155;
+    }
+    .ride-lock-unit {
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #1e293b;
+      margin-top: 6px;
+    }
+    .ride-lock-vol {
+      margin-top: 22px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #7c2d12;
+      font-variant-numeric: tabular-nums;
+    }
+    .ride-lock-track-title {
+      margin-top: 8px;
+      font-size: 0.76rem;
+      color: #1e293b;
+      max-width: 260px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Slide-to-Unlock Control */
+    .slide-unlock-track {
+      width: 100%;
+      max-width: 310px;
+      height: 58px;
+      background: #0a0a0a;
+      border: 1px solid #1e293b;
+      border-radius: 999px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .slide-unlock-label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: #475569;
+      pointer-events: none;
+    }
+    .slide-unlock-thumb {
+      position: absolute;
+      left: 4px;
+      top: 4px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #f97316;
+      font-size: 1.15rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: grab;
+      touch-action: none;
+    }
   </style>
 </head>
 <body>
@@ -575,14 +685,40 @@
   <!-- Toast Feedback -->
   <div id="iosToast" class="app-toast">Simulator active</div>
 
+  <!-- OLED Ride Lock / Pocket Mode Overlay -->
+  <div id="rideLockOverlay" class="ride-lock-overlay" aria-hidden="true">
+    <div class="ride-lock-status">
+      <span class="ride-lock-dot"></span>
+      <span>OLED Pocket Lock Active</span>
+    </div>
+
+    <div id="rideLockTelemetry" class="ride-lock-telemetry">
+      <div id="lockSpeedDisplay" class="ride-lock-speed">0</div>
+      <div id="lockUnitDisplay" class="ride-lock-unit">KM/H</div>
+      <div id="lockVolDisplay" class="ride-lock-vol">Volume: 35%</div>
+      <div id="lockTrackDisplay" class="ride-lock-track-title">SpeedVolume Active</div>
+    </div>
+
+    <div style="width:100%; display:flex; flex-direction:column; align-items:center; gap:10px;">
+      <div id="slideUnlockTrack" class="slide-unlock-track">
+        <span class="slide-unlock-label">Slide to Unlock →</span>
+        <div id="slideUnlockThumb" class="slide-unlock-thumb">🔓</div>
+      </div>
+      <div style="font-size:0.68rem; color:#1e293b; text-align:center;">
+        Keep screen on in pocket • Live GPS &amp; volume active
+      </div>
+    </div>
+  </div>
+
   <!-- Clean Mobile-Formatted App Container -->
   <main class="app-shell">
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v1.9)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.1)</span></span>
       </div>
-      <div style="display:flex; gap:6px;">
+      <div style="display:flex; gap:5px;">
+        <button id="rideLockBtn" class="pill" title="OLED Pocket Lock">🔒 Lock</button>
         <button id="unitBtn" class="pill">km/h</button>
         <button id="gpsBtn" class="pill">Start GPS</button>
       </div>
@@ -803,7 +939,18 @@
   const playlistDrawer = document.getElementById('playlistDrawer');
   const playlistList = document.getElementById('playlistList');
   const iosToast = document.getElementById('iosToast');
+  const rideLockBtn = document.getElementById('rideLockBtn');
+  const rideLockOverlay = document.getElementById('rideLockOverlay');
+  const rideLockTelemetry = document.getElementById('rideLockTelemetry');
+  const lockSpeedDisplay = document.getElementById('lockSpeedDisplay');
+  const lockUnitDisplay = document.getElementById('lockUnitDisplay');
+  const lockVolDisplay = document.getElementById('lockVolDisplay');
+  const lockTrackDisplay = document.getElementById('lockTrackDisplay');
+  const slideUnlockTrack = document.getElementById('slideUnlockTrack');
+  const slideUnlockThumb = document.getElementById('slideUnlockThumb');
 
+  let isRideLocked = false;
+  let burnInShiftTimer = null;
   let isTrackPlaying = false;
   let cachedDecodedTrackUrl = null;
   let cachedDecodedBuffer = null;
@@ -898,43 +1045,44 @@
 
     if (isTrackPlaying && !document.hidden && !isUsingBgAudio) {
       const syncPos = audioEl.currentTime || 0;
-      bgAudioEl.muted = true;
       bgAudioEl.src = activeScaledBlobUrl;
       bgAudioEl.currentTime = syncPos;
-      bgAudioEl.play().catch(() => {});
     }
     if (oldBlob) {
       setTimeout(() => URL.revokeObjectURL(oldBlob), 1500);
     }
   }
 
-  // Encode a WAV Blob with the exact Speed -> Volume Curve gain baked into the PCM samples
+  // Encode a decoded AudioBuffer into a gain-scaled PCM WAV Blob URL for Lock Screen playback
   function buildGainScaledWavBlobUrl(audioBuffer, gainScalar) {
-    const numChannels = Math.min(audioBuffer.numberOfChannels, 2);
+    const numChannels = audioBuffer.numberOfChannels;
     const sampleRate = audioBuffer.sampleRate;
     const length = audioBuffer.length;
     const bytesPerSample = 2;
     const blockAlign = numChannels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
     const dataSize = length * blockAlign;
     const buffer = new ArrayBuffer(44 + dataSize);
     const view = new DataView(buffer);
 
-    const writeStr = (offset, str) => {
-      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    const writeString = (offset, str) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
     };
 
-    writeStr(0, 'RIFF');
+    writeString(0, 'RIFF');
     view.setUint32(4, 36 + dataSize, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true);
     view.setUint16(22, numChannels, true);
     view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint32(28, byteRate, true);
     view.setUint16(32, blockAlign, true);
     view.setUint16(34, 16, true);
-    writeStr(36, 'data');
+    writeString(36, 'data');
     view.setUint32(40, dataSize, true);
 
     const channels = [];
@@ -945,34 +1093,153 @@
     let offset = 44;
     for (let i = 0; i < length; i++) {
       for (let c = 0; c < numChannels; c++) {
-        let sample = channels[c][i] * gainScalar;
-        sample = Math.max(-1, Math.min(1, sample));
+        const sample = Math.max(-1, Math.min(1, channels[c][i] * gainScalar));
         view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
         offset += 2;
       }
     }
 
-    return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    return URL.createObjectURL(blob);
   }
 
-  function startBgSyncLoop() {
-    clearInterval(bgSyncTimer);
-    bgSyncTimer = setInterval(() => {
-      if (!isTrackPlaying || isUsingBgAudio || document.hidden) return;
-      if (bgAudioEl.paused && bgAudioEl.src) {
-        bgAudioEl.muted = true;
-        bgAudioEl.play().catch(() => {});
-      }
-      const diff = Math.abs((audioEl.currentTime || 0) - (bgAudioEl.currentTime || 0));
-      if (diff > 0.35 && bgAudioEl.readyState >= 1) {
-        try {
-          bgAudioEl.currentTime = audioEl.currentTime;
-        } catch (e) {}
-      }
-    }, 1000);
+  // Smoothly ramp Web Audio gain and update UI meters
+  function applySmoothVolume(targetVolPercent) {
+    const clamped = Math.max(0, Math.min(100, targetVolPercent));
+    volDisplay.textContent = `${Math.round(clamped)}%`;
+    gainBarFill.style.width = `${clamped}%`;
+    if (lockVolDisplay) {
+      lockVolDisplay.textContent = `Volume: ${Math.round(clamped)}%`;
+    }
+
+    if (audioCtx && gainNode) {
+      const targetGain = clamped <= 0 ? 0.0001 : Math.pow(clamped / 100, 1.6);
+      const now = audioCtx.currentTime;
+      gainNode.gain.cancelScheduledValues(now);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+      gainNode.gain.linearRampToValueAtTime(targetGain, now + Math.max(0.08, smoothingSeconds * 0.4));
+    }
+
+    if (cachedDecodedBuffer && !document.hidden) {
+      refreshScaledBlobInBackground(false);
+    }
   }
 
-  // Seamless Foreground (Speed-Gain Stream) <-> Background (Instant Unmute Lock Screen Audio) Handoff
+  function updateMediaSession(track) {
+    if (!('mediaSession' in navigator) || !track) return;
+    try {
+      const iconHref = document.getElementById('appleTouchIcon')?.href || '';
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.name || 'SpeedVolume Track',
+        artist: 'SpeedVolume Player',
+        album: 'Motorcycle Ride Mix',
+        artwork: iconHref ? [{ src: iconHref, sizes: '512x512', type: 'image/png' }] : []
+      });
+      navigator.mediaSession.setActionHandler('play', () => playCurrentTrack());
+      navigator.mediaSession.setActionHandler('pause', () => pauseCurrentTrack());
+      navigator.mediaSession.setActionHandler('previoustrack', () => loadTrack(currentTrackIndex - 1, true));
+      navigator.mediaSession.setActionHandler('nexttrack', () => loadTrack(currentTrackIndex + 1, true));
+    } catch (e) {}
+  }
+
+  function stopBufferPlayback() {
+    if (bufferSourceNode) {
+      try {
+        bufferSourceNode.stop();
+        bufferSourceNode.disconnect();
+      } catch (e) {}
+      bufferSourceNode = null;
+    }
+    isUsingWebAudioBuffer = false;
+  }
+
+  // --- BUILT-IN TEST SYNTH ---
+  function startDemoSynth() {
+    if (isTrackPlaying) pauseCurrentTrack();
+    initAudioEngine();
+    synthPlaying = true;
+    synthStep = 0;
+    demoSynthBtn.classList.add('active');
+    playBtn.textContent = '⏸';
+    trackNameEl.textContent = '♫ Built-in Synthwave Test Loop';
+    handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
+
+    const notes = [110, 110, 130.81, 146.83, 164.81, 146.83, 130.81, 98];
+    const playStep = () => {
+      if (!synthPlaying || !audioCtx || !gainNode) return;
+      const now = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const noteGain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(notes[synthStep % notes.length], now);
+
+      noteGain.gain.setValueAtTime(0.001, now);
+      noteGain.gain.exponentialRampToValueAtTime(0.32, now + 0.03);
+      noteGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+
+      osc.connect(noteGain);
+      noteGain.connect(gainNode);
+      osc.start(now);
+      osc.stop(now + 0.26);
+      synthStep++;
+    };
+
+    playStep();
+    synthTimer = setInterval(playStep, 260);
+  }
+
+  function stopDemoSynth() {
+    synthPlaying = false;
+    clearInterval(synthTimer);
+    synthTimer = null;
+    demoSynthBtn.classList.remove('active');
+    playBtn.textContent = '▶';
+    if (playlist.length > 0 && playlist[currentTrackIndex]) {
+      trackNameEl.textContent = playlist[currentTrackIndex].name;
+    } else {
+      trackNameEl.textContent = 'Tap "Test Synth", "Archive URL", or load MP3s';
+    }
+  }
+
+  demoSynthBtn.addEventListener('click', () => {
+    if (synthPlaying) stopDemoSynth();
+    else startDemoSynth();
+  });
+
+  // --- TRACK LOADING & PLAYBACK ---
+  function loadTrack(index, autoPlay = false) {
+    if (!playlist.length) return;
+    if (synthPlaying) stopDemoSynth();
+
+    currentTrackIndex = ((index % playlist.length) + playlist.length) % playlist.length;
+    const track = playlist[currentTrackIndex];
+    trackNameEl.textContent = track.name;
+    originalTrackUrl = track.url;
+    cachedDecodedTrackUrl = null;
+    cachedDecodedBuffer = null;
+    scaledBlobGainScalar = null;
+
+    if (activeScaledBlobUrl) {
+      URL.revokeObjectURL(activeScaledBlobUrl);
+      activeScaledBlobUrl = null;
+    }
+
+    audioEl.pause();
+    bgAudioEl.pause();
+    isTrackPlaying = false;
+    isUsingBgAudio = false;
+    audioEl.crossOrigin = 'anonymous';
+    audioEl.src = track.url;
+    playBtn.textContent = '▶';
+    updateMediaSession(track);
+    renderPlaylist();
+
+    if (autoPlay) {
+      playCurrentTrack();
+    }
+  }
+
+  // Seamless Foreground (Speed-Gain Stream) <-> Background (Lock Screen Audio) Handoff
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && watchId !== null) {
       requestWakeLock();
@@ -985,27 +1252,22 @@
     if (document.hidden) {
       if (isTrackPlaying && !isUsingBgAudio) {
         const currentPos = audioEl.currentTime || 0;
-        if (bgAudioEl.src && bgAudioEl.readyState >= 1) {
-          try {
-            if (Math.abs((bgAudioEl.currentTime || 0) - currentPos) > 0.25) {
-              bgAudioEl.currentTime = currentPos;
-            }
-          } catch (e) {}
-          bgAudioEl.muted = false;
-          bgAudioEl.play().catch(() => {});
-        } else {
-          bgAudioEl.muted = false;
-          bgAudioEl.src = activeScaledBlobUrl || track.url;
-          bgAudioEl.currentTime = currentPos;
-          bgAudioEl.play().catch(() => {});
-        }
-        audioEl.pause();
         isUsingBgAudio = true;
+        audioEl.pause();
+        if (activeScaledBlobUrl) {
+          bgAudioEl.src = activeScaledBlobUrl;
+        } else if (!bgAudioEl.src || bgAudioEl.src !== track.url) {
+          bgAudioEl.src = track.url;
+        }
+        try {
+          bgAudioEl.currentTime = currentPos;
+        } catch (e) {}
+        bgAudioEl.play().catch(() => {});
       }
     } else {
       if (isTrackPlaying && isUsingBgAudio) {
         const currentPos = bgAudioEl.currentTime || 0;
-        bgAudioEl.muted = true;
+        bgAudioEl.pause();
         isUsingBgAudio = false;
         initAudioEngine();
         try {
@@ -1016,185 +1278,32 @@
     }
   });
 
-  function applySmoothVolume(percent) {
-    const clamped = Math.max(0, Math.min(100, percent));
-    volDisplay.textContent = `${Math.round(clamped)}%`;
-    gainBarFill.style.width = `${clamped}%`;
-
-    if (audioCtx && gainNode) {
-      if (audioCtx.state === 'suspended' && (isTrackPlaying || synthPlaying)) {
-        audioCtx.resume().catch(() => {});
-      }
-      const now = audioCtx.currentTime;
-      const targetGain = clamped <= 0 ? 0.0001 : Math.pow(clamped / 100, 1.6);
-      const rampDuration = Math.max(0.08, Math.min(smoothingSeconds * 0.4, 1.2));
-      gainNode.gain.cancelScheduledValues(now);
-      gainNode.gain.setValueAtTime(gainNode.gain.value, now);
-      gainNode.gain.linearRampToValueAtTime(targetGain, now + rampDuration);
-    }
-
-    if (!document.hidden && cachedDecodedBuffer) {
-      clearTimeout(window._blobRebuildTimer);
-      window._blobRebuildTimer = setTimeout(() => {
-        refreshScaledBlobInBackground();
-      }, 300);
-    }
-  }
-
-  // --- BUILT-IN SYNTHWAVE LOOP (For Instant Desk Testing) ---
-  function startDemoSynth() {
-    initAudioEngine();
-    if (isTrackPlaying) {
-      pauseCurrentTrack();
-    }
-    synthPlaying = true;
-    demoSynthBtn.classList.add('active');
-    demoSynthBtn.innerHTML = '<span>■ Stop Synth</span>';
-    trackNameEl.textContent = '♫ Built-in Synthwave Loop (Active)';
-    playBtn.textContent = '⏸';
-
-    const notes = [110, 110, 130.81, 146.83, 164.81, 146.83, 130.81, 98.0];
-    synthStep = 0;
-
-    const triggerNote = () => {
-      if (!synthPlaying || !audioCtx) return;
-      const now = audioCtx.currentTime;
-      const freq = notes[synthStep % notes.length];
-
-      const osc = audioCtx.createOscillator();
-      const noteEnv = audioCtx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(freq, now);
-
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(900, now);
-      filter.frequency.exponentialRampToValueAtTime(220, now + 0.22);
-
-      noteEnv.gain.setValueAtTime(0.001, now);
-      noteEnv.gain.linearRampToValueAtTime(0.45, now + 0.02);
-      noteEnv.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
-
-      osc.connect(filter);
-      filter.connect(noteEnv);
-      noteEnv.connect(gainNode);
-
-      osc.start(now);
-      osc.stop(now + 0.25);
-      synthStep++;
-    };
-
-    triggerNote();
-    synthTimer = setInterval(triggerNote, 260);
-    showToast('Playing test synth — drag speed slider');
-  }
-
-  function stopDemoSynth() {
-    synthPlaying = false;
-    clearInterval(synthTimer);
-    demoSynthBtn.classList.remove('active');
-    demoSynthBtn.innerHTML = '<span>♫ Test Synth</span>';
-    if (!playlist.length) {
-      trackNameEl.textContent = 'Tap "Test Synth", "Archive URL", or load MP3s';
-      playBtn.textContent = '▶';
-    } else {
-      trackNameEl.textContent = playlist[currentTrackIndex].name;
-      playBtn.textContent = isTrackPlaying ? '⏸' : '▶';
-    }
-  }
-
-  demoSynthBtn.addEventListener('click', () => {
-    if (synthPlaying) stopDemoSynth();
-    else startDemoSynth();
-  });
-
-  // --- PLAYLIST & MP3 PLAYER ---
-  function stopBufferPlayback() {
-    if (bufferSourceNode) {
-      try {
-        bufferSourceNode.onended = null;
-        bufferSourceNode.stop();
-        bufferSourceNode.disconnect();
-      } catch (e) {}
-      bufferSourceNode = null;
-    }
-    isUsingWebAudioBuffer = false;
-  }
-
-  function updateMediaSession(track) {
-    if (!('mediaSession' in navigator) || !track) return;
-    try {
-      const iconHref = document.getElementById('appleTouchIcon')?.href || '';
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track.name,
-        artist: 'SpeedVolume Player',
-        album: 'Ride Mix',
-        artwork: iconHref ? [{ src: iconHref, sizes: '512x512', type: 'image/png' }] : []
-      });
-      navigator.mediaSession.setActionHandler('play', () => playCurrentTrack());
-      navigator.mediaSession.setActionHandler('pause', () => pauseCurrentTrack());
-      navigator.mediaSession.setActionHandler('previoustrack', () => prevBtn.click());
-      navigator.mediaSession.setActionHandler('nexttrack', () => nextBtn.click());
-    } catch (e) {}
-  }
-
-  function loadTrack(index, autoPlay = false) {
-    if (!playlist.length) return;
-    if (synthPlaying) stopDemoSynth();
-
-    stopBufferPlayback();
-    clearInterval(bgSyncTimer);
-    isTrackPlaying = false;
-    isUsingBgAudio = false;
-    bufferPauseOffset = 0;
-    currentTrackIndex = (index + playlist.length) % playlist.length;
-    const track = playlist[currentTrackIndex];
-
-    trackNameEl.textContent = track.name;
-    audioEl.pause();
-    audioEl.muted = false;
-    audioEl.src = track.url;
-    audioEl.dataset.trackUrl = track.url;
-
-    bgAudioEl.pause();
-    bgAudioEl.muted = true;
-    bgAudioEl.removeAttribute('src');
-
-    updateMediaSession(track);
-    renderPlaylist();
-
-    if (autoPlay) {
-      playCurrentTrack();
-    } else {
-      playBtn.textContent = '▶';
-    }
-  }
-
   function playCurrentTrack() {
     if (!playlist.length) return;
     if (synthPlaying) stopDemoSynth();
-    initAudioEngine();
 
     const track = playlist[currentTrackIndex];
     if (!track) return;
 
-    bgAudioEl.pause();
-    bgAudioEl.muted = true;
-    isUsingBgAudio = false;
-    audioEl.muted = false;
-    if (!audioEl.src || audioEl.src === window.location.href || audioEl.dataset.trackUrl !== track.url) {
+    initAudioEngine();
+    handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
+
+    if (!audioEl.src || originalTrackUrl !== track.url) {
+      originalTrackUrl = track.url;
+      audioEl.crossOrigin = 'anonymous';
       audioEl.src = track.url;
-      audioEl.dataset.trackUrl = track.url;
     }
 
-    const startOffset = bufferPauseOffset || 0;
-    playBtn.textContent = '⏳';
+    const startOffset = isUsingBgAudio ? (bgAudioEl.currentTime || 0) : (audioEl.currentTime || 0);
+    bgAudioEl.pause();
+    isUsingBgAudio = false;
 
     const playPromise = audioEl.play();
     if (playPromise !== undefined) {
       playPromise.then(() => {
         isTrackPlaying = true;
         playBtn.textContent = '⏸';
+        updateMediaSession(track);
         renderPlaylist();
 
         if (startOffset > 0 && audioEl.readyState >= 1) {
@@ -1203,11 +1312,9 @@
           } catch (e) {}
         }
 
-        bgAudioEl.muted = true;
+        // Pre-load background player URL (unmuted, paused) so lock-screen switch is ready without dual-stream interference
         bgAudioEl.src = activeScaledBlobUrl || track.url;
-        bgAudioEl.currentTime = startOffset;
-        bgAudioEl.play().catch(() => {});
-        startBgSyncLoop();
+        bgAudioEl.load();
 
         preDecodeTrackForLockScreen(track.url, track.file || null);
       }).catch((err) => {
@@ -1669,6 +1776,9 @@
     }
     const displaySpd = Math.round(filteredSpeed);
     speedDisplay.textContent = displaySpd;
+    if (lockSpeedDisplay) {
+      lockSpeedDisplay.textContent = displaySpd;
+    }
 
     const targetVol = calculateVolumeForSpeed(filteredSpeed);
     applySmoothVolume(targetVol);
@@ -1746,7 +1856,7 @@
       navigator.geolocation.clearWatch(watchId);
       watchId = null;
     }
-    if (wakeLock) {
+    if (wakeLock && !isRideLocked) {
       wakeLock.release().catch(() => {});
       wakeLock = null;
     }
@@ -1757,20 +1867,111 @@
     }
   }
 
-  gpsBtn.addEventListener('click', () => {
-    if (watchId !== null) stopGPS();
-    else startGPS();
+  // --- OLED RIDE LOCK / POCKET MODE ---
+  function enterRideLock() {
+    isRideLocked = true;
+    rideLockOverlay.classList.add('active');
+    rideLockOverlay.setAttribute('aria-hidden', 'false');
+    lockSpeedDisplay.textContent = speedDisplay.textContent;
+    lockUnitDisplay.textContent = unit === 'kmh' ? 'KM/H' : 'MPH';
+    lockVolDisplay.textContent = `Volume: ${volDisplay.textContent}`;
+    lockTrackDisplay.textContent = trackNameEl.textContent || 'SpeedVolume Active';
+    slideUnlockThumb.style.transform = 'translateX(0px)';
+
+    // Request Screen Wake Lock so iPhone stays awake in pocket without turning off GPS/WebAudio
+    requestWakeLock();
+
+    // Subtle OLED pixel-shift every 25s to prevent static burn-in on long rides
+    let shiftIdx = 0;
+    const shifts = [
+      'translate(0px, 0px)',
+      'translate(8px, -10px)',
+      'translate(-8px, 8px)',
+      'translate(6px, 10px)',
+      'translate(-6px, -8px)'
+    ];
+    clearInterval(burnInShiftTimer);
+    burnInShiftTimer = setInterval(() => {
+      shiftIdx = (shiftIdx + 1) % shifts.length;
+      rideLockTelemetry.style.transform = shifts[shiftIdx];
+    }, 25000);
+  }
+
+  function exitRideLock() {
+    isRideLocked = false;
+    rideLockOverlay.classList.remove('active');
+    rideLockOverlay.setAttribute('aria-hidden', 'true');
+    slideUnlockThumb.style.transform = 'translateX(0px)';
+    rideLockTelemetry.style.transform = 'translate(0px, 0px)';
+    clearInterval(burnInShiftTimer);
+    if (watchId === null && wakeLock) {
+      wakeLock.release().catch(() => {});
+      wakeLock = null;
+    }
+    showToast('Ride Lock unlocked');
+  }
+
+  rideLockBtn.addEventListener('click', () => {
+    enterRideLock();
   });
 
+  // Slide-to-Unlock Touch & Mouse Handler (prevents pocket fabric accidental taps)
+  (function initSlideToUnlock() {
+    let dragging = false;
+    let startX = 0;
+    let currentX = 0;
+
+    const getMaxSlide = () => Math.max(120, slideUnlockTrack.clientWidth - slideUnlockThumb.offsetWidth - 10);
+
+    const onStart = (clientX) => {
+      dragging = true;
+      startX = clientX - currentX;
+      slideUnlockThumb.style.transition = 'none';
+    };
+
+    const onMove = (clientX) => {
+      if (!dragging) return;
+      const maxSlide = getMaxSlide();
+      currentX = Math.max(0, Math.min(maxSlide, clientX - startX));
+      slideUnlockThumb.style.transform = `translateX(${currentX}px)`;
+      if (currentX >= maxSlide * 0.88) {
+        dragging = false;
+        currentX = 0;
+        exitRideLock();
+      }
+    };
+
+    const onEnd = () => {
+      if (!dragging) return;
+      dragging = false;
+      currentX = 0;
+      slideUnlockThumb.style.transition = 'transform 0.22s ease-out';
+      slideUnlockThumb.style.transform = 'translateX(0px)';
+    };
+
+    slideUnlockThumb.addEventListener('touchstart', (e) => {
+      if (e.touches.length) onStart(e.touches[0].clientX);
+    }, { passive: true });
+
+    window.addEventListener('touchmove', (e) => {
+      if (dragging && e.touches.length) onMove(e.touches[0].clientX);
+    }, { passive: true });
+
+    window.addEventListener('touchend', onEnd);
+
+    slideUnlockThumb.addEventListener('mousedown', (e) => onStart(e.clientX));
+    window.addEventListener('mousemove', (e) => {
+      if (dragging) onMove(e.clientX);
+    });
+    window.addEventListener('mouseup', onEnd);
+  })();
+
   function applyUnitUI() {
-    const isKmh = unit === 'kmh';
-    unitBtn.textContent = isKmh ? 'km/h' : 'mph';
-    speedUnitLabel.textContent = `Speed (${isKmh ? 'km/h' : 'mph'})`;
-    simSlider.max = isKmh ? 140 : 90;
-    if (parseFloat(simSlider.value) > parseFloat(simSlider.max)) {
-      simSlider.value = simSlider.max;
-    }
-    simSpeedLabel.textContent = `${simSlider.value} ${isKmh ? 'km/h' : 'mph'}`;
+    unitBtn.textContent = unit === 'kmh' ? 'km/h' : 'mph';
+    speedUnitLabel.textContent = `Speed (${unit === 'kmh' ? 'km/h' : 'mph'})`;
+    lockUnitDisplay.textContent = unit === 'kmh' ? 'KM/H' : 'MPH';
+    simSlider.max = unit === 'kmh' ? 140 : 90;
+    simSpeedLabel.textContent = `${simSlider.value} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
     renderIntervals();
     handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
   }
@@ -1784,10 +1985,16 @@
       vol: pt.vol
     }));
     saveIntervals();
+    simSlider.value = Math.round(parseFloat(simSlider.value) * factor);
     applyUnitUI();
   });
 
-  // --- CUSTOM THEME-MATCHED APP ICON & MANIFEST GENERATOR ---
+  gpsBtn.addEventListener('click', () => {
+    if (watchId !== null) stopGPS();
+    else startGPS();
+  });
+
+  // --- CUSTOM THEME-MATCHED APP ICON GENERATOR (iOS Home Screen) ---
   function generateCustomAppIcon() {
     try {
       const canvas = document.createElement('canvas');
@@ -1803,31 +2010,31 @@
       ctx.fillRect(0, 0, 512, 512);
 
       // Subtle radial glow behind speedometer
-      const glow = ctx.createRadialGradient(256, 250, 20, 256, 250, 210);
+      const glow = ctx.createRadialGradient(256, 240, 20, 256, 240, 210);
       glow.addColorStop(0, 'rgba(249, 115, 22, 0.28)');
       glow.addColorStop(1, 'rgba(249, 115, 22, 0)');
       ctx.fillStyle = glow;
       ctx.fillRect(0, 0, 512, 512);
 
-      // Outer speedometer track arc
       const cx = 256;
-      const cy = 266;
-      const radius = 165;
+      const cy = 248;
+      const radius = 166;
       const startAngle = Math.PI * 0.78;
       const endAngle = Math.PI * 2.22;
 
-      ctx.lineCap = 'round';
+      // Track arc background
       ctx.lineWidth = 26;
+      ctx.lineCap = 'round';
       ctx.strokeStyle = '#334155';
       ctx.beginPath();
       ctx.arc(cx, cy, radius, startAngle, endAngle);
       ctx.stroke();
 
-      // Active orange-to-sky speedometer arc
-      const arcGrad = ctx.createLinearGradient(90, 260, 420, 200);
+      // Active speed arc gradient (sky blue -> vibrant orange)
+      const arcGrad = ctx.createLinearGradient(90, 250, 420, 250);
       arcGrad.addColorStop(0, '#38bdf8');
-      arcGrad.addColorStop(0.55, '#f97316');
-      arcGrad.addColorStop(1, '#fb923c');
+      arcGrad.addColorStop(0.55, '#fb923c');
+      arcGrad.addColorStop(1, '#f97316');
       ctx.strokeStyle = arcGrad;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, startAngle, Math.PI * 1.88);
@@ -1837,23 +2044,24 @@
       for (let i = 0; i <= 12; i++) {
         const t = i / 12;
         const ang = startAngle + t * (endAngle - startAngle);
-        const r1 = radius - 34;
-        const r2 = radius - 22;
-        ctx.lineWidth = i % 3 === 0 ? 5 : 3;
+        const innerR = i % 3 === 0 ? 124 : 132;
+        const outerR = 144;
         ctx.strokeStyle = i <= 9 ? '#f8fafc' : '#64748b';
+        ctx.lineWidth = i % 3 === 0 ? 5 : 3;
         ctx.beginPath();
-        ctx.moveTo(cx + Math.cos(ang) * r1, cy + Math.sin(ang) * r1);
-        ctx.lineTo(cx + Math.cos(ang) * r2, cy + Math.sin(ang) * r2);
+        ctx.moveTo(cx + Math.cos(ang) * innerR, cy + Math.sin(ang) * innerR);
+        ctx.lineTo(cx + Math.cos(ang) * outerR, cy + Math.sin(ang) * outerR);
         ctx.stroke();
       }
 
       // Glowing orange speedometer needle
       const needleAngle = Math.PI * 1.88;
       ctx.save();
-      ctx.shadowColor = 'rgba(249, 115, 22, 0.7)';
-      ctx.shadowBlur = 16;
+      ctx.shadowColor = 'rgba(249, 115, 22, 0.75)';
+      ctx.shadowBlur = 18;
       ctx.strokeStyle = '#f97316';
       ctx.lineWidth = 12;
+      ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(cx - Math.cos(needleAngle) * 24, cy - Math.sin(needleAngle) * 24);
       ctx.lineTo(cx + Math.cos(needleAngle) * 124, cy + Math.sin(needleAngle) * 124);
