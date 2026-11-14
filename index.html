@@ -715,11 +715,10 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.2)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.3)</span></span>
       </div>
-      <div style="display:flex; gap:5px;">
+      <div style="display:flex; gap:6px;">
         <button id="rideLockBtn" class="pill" title="OLED Pocket Lock">🔒 Lock</button>
-        <button id="unitBtn" class="pill">km/h</button>
         <button id="gpsBtn" class="pill">Start GPS</button>
       </div>
     </header>
@@ -922,7 +921,6 @@
   const addIntervalBtn = document.getElementById('addIntervalBtn');
   const gpsBtn = document.getElementById('gpsBtn');
   const gpsStatus = document.getElementById('gpsStatus');
-  const unitBtn = document.getElementById('unitBtn');
   const speedUnitLabel = document.getElementById('speedUnitLabel');
   const smoothSlider = document.getElementById('smoothSlider');
   const smoothVal = document.getElementById('smoothVal');
@@ -962,6 +960,7 @@
   let mediaSourceNode = null;
   let isUsingBgAudio = false;
   let bgSyncTimer = null;
+  let prewarmedBlobMap = new Map(); // url -> local blobUrl for instant iOS Safari switching
 
   let toastTimer = null;
   function showToast(msg) {
@@ -1230,9 +1229,17 @@
     bgAudioEl.pause();
     isTrackPlaying = false;
     isUsingBgAudio = false;
-    audioEl.crossOrigin = 'anonymous';
-    audioEl.src = track.url;
-    audioEl.load();
+
+    // Use in-memory pre-cached Blob URL on iOS if available for zero-latency switching
+    const cachedBlob = prewarmedBlobMap.get(track.url);
+    if (cachedBlob) {
+      audioEl.removeAttribute('crossorigin');
+      audioEl.src = cachedBlob;
+    } else {
+      audioEl.crossOrigin = 'anonymous';
+      audioEl.src = track.url;
+    }
+
     playBtn.textContent = '▶';
     updateMediaSession(track);
     renderPlaylist();
@@ -1243,14 +1250,30 @@
     }
   }
 
-  // Pre-warm the next track in the queue so pressing Next starts near-instantly
-  function prewarmNextTrack() {
+  // Pre-cache the next track into a RAM Blob URL so iOS Safari switches instantaneously
+  async function prewarmNextTrack() {
     if (playlist.length <= 1) return;
     const nextIdx = (currentTrackIndex + 1) % playlist.length;
     const nextTrack = playlist[nextIdx];
-    if (nextTrack && nextTrack.url && preloadAudioEl.src !== nextTrack.url) {
+    if (!nextTrack || !nextTrack.url || nextTrack.file || prewarmedBlobMap.has(nextTrack.url)) return;
+
+    try {
+      const resp = await fetch(nextTrack.url, { mode: 'cors', redirect: 'follow' });
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      prewarmedBlobMap.set(nextTrack.url, blobUrl);
+
+      // Keep cache bounded to 3 tracks max to preserve iPhone memory
+      if (prewarmedBlobMap.size > 3) {
+        const oldestKey = prewarmedBlobMap.keys().next().value;
+        const oldUrl = prewarmedBlobMap.get(oldestKey);
+        if (oldUrl) URL.revokeObjectURL(oldUrl);
+        prewarmedBlobMap.delete(oldestKey);
+      }
+    } catch (e) {
+      // Fallback to hidden audio element hint if CORS fetch is blocked
       preloadAudioEl.src = nextTrack.url;
-      preloadAudioEl.load();
     }
   }
 
@@ -1303,10 +1326,16 @@
     initAudioEngine();
     handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
 
+    const cachedBlob = prewarmedBlobMap.get(track.url);
     if (!audioEl.src || originalTrackUrl !== track.url) {
       originalTrackUrl = track.url;
-      audioEl.crossOrigin = 'anonymous';
-      audioEl.src = track.url;
+      if (cachedBlob) {
+        audioEl.removeAttribute('crossorigin');
+        audioEl.src = cachedBlob;
+      } else {
+        audioEl.crossOrigin = 'anonymous';
+        audioEl.src = track.url;
+      }
     }
 
     const startOffset = isUsingBgAudio ? (bgAudioEl.currentTime || 0) : (audioEl.currentTime || 0);
@@ -1315,7 +1344,7 @@
 
     // Immediate optimistic UI response on tap
     isTrackPlaying = true;
-    playBtn.textContent = '⏳';
+    playBtn.textContent = cachedBlob ? '⏸' : '⏳';
     renderPlaylist();
 
     const playPromise = audioEl.play();
@@ -1333,7 +1362,7 @@
           } catch (e) {}
         }
 
-        preDecodeTrackForLockScreen(track.url, track.file || null);
+        preDecodeTrackForLockScreen(cachedBlob || track.url, track.file || null);
       }).catch((err) => {
         if (audioEl.crossOrigin) {
           audioEl.removeAttribute('crossorigin');
@@ -1688,7 +1717,7 @@
 
   function updateGraph(currentSpeed = null, currentVol = null) {
     const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
-    const maxSpeed = unit === 'kmh' ? 140 : 90;
+    const maxSpeed = 140;
     document.getElementById('midAxisLabel').textContent = Math.round(maxSpeed / 2);
     document.getElementById('maxAxisLabel').textContent = maxSpeed;
 
@@ -1739,7 +1768,7 @@
       <div class="interval-row">
         <div class="input-group">
           <input type="number" class="spd-input" data-idx="${idx}" min="0" max="300" value="${item.speed}" />
-          <span>${unit === 'kmh' ? 'km/h' : 'mph'}</span>
+          <span>km/h</span>
         </div>
         <div class="input-group">
           <input type="number" class="vol-input" data-idx="${idx}" min="0" max="100" value="${item.vol}" />
@@ -1787,15 +1816,14 @@
   addIntervalBtn.addEventListener('click', () => {
     const sorted = [...intervals].sort((a, b) => a.speed - b.speed);
     const last = sorted[sorted.length - 1] || { speed: 80, vol: 80 };
-    const step = unit === 'kmh' ? 20 : 15;
-    const newSpeed = Math.min(unit === 'kmh' ? 240 : 150, last.speed + step);
+    const newSpeed = Math.min(240, last.speed + 20);
     const newVol = Math.min(100, last.vol + 10);
     intervals.push({ speed: newSpeed, vol: newVol });
     intervals.sort((a, b) => a.speed - b.speed);
     saveIntervals();
     renderIntervals();
     handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
-    showToast(`Added ${newSpeed} ${unit === 'kmh' ? 'km/h' : 'mph'} point`);
+    showToast(`Added ${newSpeed} km/h point`);
   });
 
   // --- SPEED PROCESSING, GPS & SIMULATOR ---
@@ -1826,7 +1854,7 @@
 
   simSlider.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);
-    simSpeedLabel.textContent = `${val} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
+    simSpeedLabel.textContent = `${val} km/h`;
     if (simToggle.checked) {
       handleSpeedUpdate(val, true);
     }
@@ -1868,7 +1896,7 @@
           if (!simToggle.checked) handleSpeedUpdate(0);
           return;
         }
-        const converted = unit === 'kmh' ? mps * 3.6 : mps * 2.23694;
+        const converted = mps * 3.6;
         gpsStatus.textContent = `GPS active (±${Math.round(pos.coords.accuracy || 0)}m accuracy)`;
         if (!simToggle.checked) {
           handleSpeedUpdate(converted);
@@ -1904,7 +1932,7 @@
     rideLockOverlay.classList.add('active');
     rideLockOverlay.setAttribute('aria-hidden', 'false');
     lockSpeedDisplay.textContent = speedDisplay.textContent;
-    lockUnitDisplay.textContent = unit === 'kmh' ? 'KM/H' : 'MPH';
+    lockUnitDisplay.textContent = 'KM/H';
     lockVolDisplay.textContent = `Volume: ${volDisplay.textContent}`;
     lockTrackDisplay.textContent = trackNameEl.textContent || 'SpeedVolume Active';
     slideUnlockThumb.style.transform = 'translateX(0px)';
@@ -1998,27 +2026,13 @@
   })();
 
   function applyUnitUI() {
-    unitBtn.textContent = unit === 'kmh' ? 'km/h' : 'mph';
-    speedUnitLabel.textContent = `Speed (${unit === 'kmh' ? 'km/h' : 'mph'})`;
-    lockUnitDisplay.textContent = unit === 'kmh' ? 'KM/H' : 'MPH';
-    simSlider.max = unit === 'kmh' ? 140 : 90;
-    simSpeedLabel.textContent = `${simSlider.value} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
+    speedUnitLabel.textContent = 'Speed (km/h)';
+    lockUnitDisplay.textContent = 'KM/H';
+    simSlider.max = 140;
+    simSpeedLabel.textContent = `${simSlider.value} km/h`;
     renderIntervals();
     handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
   }
-
-  unitBtn.addEventListener('click', () => {
-    const factor = unit === 'kmh' ? 0.621371 : 1.60934;
-    unit = unit === 'kmh' ? 'mph' : 'kmh';
-    localStorage.setItem('sv_unit', unit);
-    intervals = intervals.map((pt) => ({
-      speed: Math.round(pt.speed * factor),
-      vol: pt.vol
-    }));
-    saveIntervals();
-    simSlider.value = Math.round(parseFloat(simSlider.value) * factor);
-    applyUnitUI();
-  });
 
   gpsBtn.addEventListener('click', () => {
     if (watchId !== null) stopGPS();
