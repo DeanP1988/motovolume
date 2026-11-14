@@ -1019,6 +1019,7 @@
     const stepMs = 250;
     const triggerStep = () => {
       if (!audioCtx || !isSynthActive) return;
+      if (audioCtx.state === 'suspended') audioCtx.resume();
       const t = audioCtx.currentTime;
       const chordIdx = Math.floor(step / 8) % chords.length;
       const barStep = step % 8;
@@ -1064,8 +1065,11 @@
     demoSynthBtn.classList.add('active');
     playBtn.textContent = '⏸';
     trackNameEl.textContent = 'Synthwave Groove (Fmaj7 → Cmaj9)';
+
+    // Bind iOS Lock Screen Media Session so synth stays alive when locked/backgrounded
+    setupMediaSession('Synthwave Groove', 'SpeedVolume Synth', true);
     refreshCurrentVolume();
-    showToast('Synth groove active — drag speed slider to hear fade');
+    showToast('Synth groove active — background audio enabled');
   }
 
   function stopDemoSynth(keepLabel = false) {
@@ -1086,11 +1090,105 @@
     demoSynthBtn.classList.remove('active');
     if (!keepLabel) {
       playBtn.textContent = '▶';
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'paused';
+      }
       if (!playlist.length) {
-        trackNameEl.textContent = 'Tap "Test Synth" or load local MP3s';
+        trackNameEl.textContent = 'Tap "Test Synth", "Archive URL", or load MP3s';
       }
     }
   }
+
+  // --- IOS LOCK SCREEN & BACKGROUND MEDIA SESSION ---
+  function setupMediaSession(title, artist = 'SpeedVolume', isSynth = false) {
+    if (!('mediaSession' in navigator)) return;
+
+    const artworkUrl = document.getElementById('appleTouchIcon')?.href || '';
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: title || 'SpeedVolume Track',
+      artist: artist,
+      album: 'SpeedVolume Ride Mix',
+      artwork: artworkUrl ? [{ src: artworkUrl, sizes: '512x512', type: 'image/png' }] : []
+    });
+
+    navigator.mediaSession.playbackState = 'playing';
+
+    navigator.mediaSession.setActionHandler('play', () => {
+      initAudioEngine();
+      if (isSynth || isSynthActive) {
+        if (!isSynthActive) startDemoSynth();
+      } else if (playlist.length) {
+        audioEl.play();
+        playBtn.textContent = '⏸';
+        navigator.mediaSession.playbackState = 'playing';
+        renderPlaylist();
+      }
+    });
+
+    navigator.mediaSession.setActionHandler('pause', () => {
+      if (isSynthActive) {
+        stopDemoSynth();
+        renderPlaylist();
+      } else {
+        audioEl.pause();
+        playBtn.textContent = '▶';
+        navigator.mediaSession.playbackState = 'paused';
+        renderPlaylist();
+      }
+    });
+
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      if (playlist.length) loadTrack(currentTrackIndex + 1, true);
+    });
+
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      if (playlist.length) loadTrack(currentTrackIndex - 1, true);
+    });
+
+    try {
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (!isSynthActive && audioEl.duration && details.seekTime != null) {
+          audioEl.currentTime = details.seekTime;
+        }
+      });
+    } catch (e) {}
+  }
+
+  // Keep Web Audio Context awake across iOS lock screen & app-switch transitions
+  document.addEventListener('visibilitychange', () => {
+    if (audioCtx && audioCtx.state === 'suspended' && (!audioEl.paused || isSynthActive)) {
+      audioCtx.resume().catch(() => {});
+    }
+    if (document.visibilityState === 'visible' && watchId !== null) {
+      requestWakeLock();
+    }
+  });
+
+  // Update Lock Screen scrubber position for MP3 tracks
+  audioEl.addEventListener('timeupdate', () => {
+    if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+      if (audioEl.duration && isFinite(audioEl.duration)) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: audioEl.duration,
+            playbackRate: audioEl.playbackRate || 1,
+            position: audioEl.currentTime
+          });
+        } catch (e) {}
+      }
+    }
+  });
+
+  audioEl.addEventListener('play', () => {
+    initAudioEngine();
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+  });
+
+  audioEl.addEventListener('pause', () => {
+    if ('mediaSession' in navigator && !isSynthActive) {
+      navigator.mediaSession.playbackState = 'paused';
+    }
+  });
 
   function applySmoothVolume(percent) {
     const clamped = Math.max(0, Math.min(100, percent));
@@ -1538,14 +1636,7 @@
     trackNameEl.textContent = `${currentTrackIndex + 1}/${playlist.length} • ${track.name}`;
     renderPlaylist();
 
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track.name,
-        artist: 'SpeedVolume'
-      });
-      navigator.mediaSession.setActionHandler('nexttrack', () => loadTrack(currentTrackIndex + 1, true));
-      navigator.mediaSession.setActionHandler('previoustrack', () => loadTrack(currentTrackIndex - 1, true));
-    }
+    setupMediaSession(track.name, track.isRemote ? 'Internet Archive Stream' : 'Offline Library', false);
 
     if (autoplay) {
       initAudioEngine();
@@ -1583,10 +1674,12 @@
     if (audioEl.paused) {
       audioEl.play();
       playBtn.textContent = '⏸';
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
       refreshCurrentVolume();
     } else {
       audioEl.pause();
       playBtn.textContent = '▶';
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     }
     renderPlaylist();
   });
@@ -1619,209 +1712,3 @@
       requestWakeLock();
     }
   });
-
-  gpsBtn.addEventListener('click', () => {
-    initAudioEngine();
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-      watchId = null;
-      gpsBtn.textContent = 'Start GPS';
-      gpsBtn.classList.remove('active');
-      gpsStatus.textContent = 'GPS stopped.';
-      if (wakeLock) wakeLock.release();
-      return;
-    }
-
-    if (!('geolocation' in navigator)) {
-      gpsStatus.textContent = 'Geolocation not supported in this browser.';
-      return;
-    }
-
-    // Automatically turn off simulator override when starting live GPS
-    simToggle.checked = false;
-    requestWakeLock();
-    gpsBtn.textContent = 'GPS Active';
-    gpsBtn.classList.add('active');
-    gpsStatus.textContent = 'Acquiring GPS satellites...';
-    showToast('GPS tracking started');
-
-    watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        if (simToggle.checked) return;
-        const mps = pos.coords.speed;
-        const acc = Math.round(pos.coords.accuracy);
-        if (mps === null || mps < 0) {
-          gpsStatus.textContent = `GPS locked (±${acc}m) — waiting for movement`;
-          updateSpeed(0);
-          return;
-        }
-        const converted = unit === 'kmh' ? mps * 3.6 : mps * 2.23694;
-        gpsStatus.textContent = `GPS signal active (±${acc}m accuracy)`;
-        updateSpeed(converted);
-      },
-      (err) => {
-        gpsStatus.textContent = `GPS Error: ${err.message}. Check Location permissions.`;
-      },
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
-    );
-  });
-
-  // --- UNIT, SMOOTHING & SIMULATOR CONTROLS ---
-  unitBtn.addEventListener('click', () => {
-    unit = unit === 'kmh' ? 'mph' : 'kmh';
-    unitBtn.textContent = unit === 'kmh' ? 'km/h' : 'mph';
-    speedUnitLabel.textContent = `Speed (${unit === 'kmh' ? 'km/h' : 'mph'})`;
-    simSpeedLabel.textContent = `${simSlider.value} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
-    saveSettings();
-    renderIntervals();
-    showToast(`Units set to ${unit === 'kmh' ? 'km/h' : 'mph'}`);
-  });
-
-  smoothSlider.value = smoothingSeconds;
-  smoothVal.textContent = `${smoothingSeconds.toFixed(1)}s`;
-  smoothSlider.addEventListener('input', (e) => {
-    smoothingSeconds = parseFloat(e.target.value);
-    smoothVal.textContent = `${smoothingSeconds.toFixed(1)}s`;
-    saveSettings();
-  });
-
-  simToggle.addEventListener('change', () => {
-    if (simToggle.checked) {
-      const val = parseFloat(simSlider.value);
-      speedDisplay.textContent = Math.round(val);
-      gpsStatus.textContent = 'Simulator override enabled. Drag slider to test.';
-      refreshCurrentVolume();
-    } else {
-      gpsStatus.textContent = watchId ? 'Using live GPS speed.' : 'Tap "Start GPS" for live tracking.';
-    }
-  });
-
-  simSlider.addEventListener('input', (e) => {
-    const val = parseFloat(e.target.value);
-    simSpeedLabel.textContent = `${val} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
-    if (simToggle.checked) {
-      initAudioEngine();
-      filteredSpeed = val;
-      speedDisplay.textContent = Math.round(val);
-      const targetVol = calculateVolumeForSpeed(val);
-      applySmoothVolume(targetVol);
-      updateGraph(val, targetVol);
-    }
-  });
-
-  // --- INITIALIZE ---
-  unitBtn.textContent = unit === 'kmh' ? 'km/h' : 'mph';
-  speedUnitLabel.textContent = `Speed (${unit === 'kmh' ? 'km/h' : 'mph'})`;
-  simSpeedLabel.textContent = `${simSlider.value} ${unit === 'kmh' ? 'km/h' : 'mph'}`;
-  renderPlaylist();
-  renderIntervals();
-  refreshCurrentVolume();
-  restoreSavedPlaylist();
-
-  // --- GENERATE CUSTOM IOS HOME SCREEN ICON & MANIFEST ---
-  function generateAppIconAndManifest() {
-    const size = 512;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-
-    // Deep slate gradient background matching app theme (#0f172a -> #1e293b)
-    const bgGrad = ctx.createLinearGradient(0, 0, size, size);
-    bgGrad.addColorStop(0, '#1e293b');
-    bgGrad.addColorStop(1, '#090d16');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, size, size);
-
-    // Subtle radial orange glow behind dial
-    const glow = ctx.createRadialGradient(256, 265, 20, 256, 265, 220);
-    glow.addColorStop(0, 'rgba(249, 115, 22, 0.25)');
-    glow.addColorStop(1, 'rgba(249, 115, 22, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, size, size);
-
-    const cx = 256;
-    const cy = 278;
-    const radius = 158;
-    const startAngle = (135 * Math.PI) / 180;
-    const endAngle = (405 * Math.PI) / 180;
-    const activeAngle = (345 * Math.PI) / 180;
-
-    // Speedometer background track arc
-    ctx.lineCap = 'round';
-    ctx.lineWidth = 28;
-    ctx.strokeStyle = '#334155';
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, startAngle, endAngle);
-    ctx.stroke();
-
-    // Active orange-to-sky speed arc
-    const arcGrad = ctx.createLinearGradient(90, 350, 420, 150);
-    arcGrad.addColorStop(0, '#f97316');
-    arcGrad.addColorStop(0.75, '#fb923c');
-    arcGrad.addColorStop(1, '#38bdf8');
-    ctx.strokeStyle = arcGrad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, startAngle, activeAngle);
-    ctx.stroke();
-
-    // Tick marks inside dial
-    for (let i = 0; i <= 8; i++) {
-      const a = startAngle + (i / 8) * (endAngle - startAngle);
-      const innerR = radius - 34;
-      const outerR = radius - 22;
-      ctx.lineWidth = i % 2 === 0 ? 5 : 3;
-      ctx.strokeStyle = i <= 6 ? '#f8fafc' : '#64748b';
-      ctx.beginPath();
-      ctx.moveTo(cx + Math.cos(a) * innerR, cy + Math.sin(a) * innerR);
-      ctx.lineTo(cx + Math.cos(a) * outerR, cy + Math.sin(a) * outerR);
-      ctx.stroke();
-    }
-
-    // Rising equalizer / volume bars in the center of the dial
-    const bars = [
-      { x: -54, h: 42, color: '#f97316' },
-      { x: -18, h: 74, color: '#fb923c' },
-      { x: 18,  h: 108, color: '#f97316' },
-      { x: 54,  h: 136, color: '#38bdf8' }
-    ];
-    bars.forEach((b) => {
-      const barW = 22;
-      const bx = cx + b.x - barW / 2;
-      const by = cy + 56 - b.h;
-      ctx.fillStyle = b.color;
-      ctx.beginPath();
-      ctx.roundRect(bx, by, barW, b.h, 11);
-      ctx.fill();
-    });
-
-    // Export high-res PNG for iOS apple-touch-icon & manifest
-    const iconDataUrl = canvas.toDataURL('image/png');
-    document.getElementById('appleTouchIcon').href = iconDataUrl;
-    document.getElementById('appFavicon').href = iconDataUrl;
-
-    const manifestObj = {
-      name: 'SpeedVolume Player',
-      short_name: 'SpeedVolume',
-      start_url: '.',
-      display: 'standalone',
-      background_color: '#0f172a',
-      theme_color: '#0f172a',
-      icons: [
-        {
-          src: iconDataUrl,
-          sizes: '512x512',
-          type: 'image/png',
-          purpose: 'any maskable'
-        }
-      ]
-    };
-
-    const manifestBlob = new Blob([JSON.stringify(manifestObj)], { type: 'application/json' });
-    document.getElementById('dynamicManifest').href = URL.createObjectURL(manifestBlob);
-  }
-
-  generateAppIconAndManifest();
-</script>
-</body>
-</html>
