@@ -587,6 +587,41 @@
     .ride-lock-overlay.active {
       display: flex;
     }
+    .ride-lock-overlay.stealth-black .ride-lock-status,
+    .ride-lock-overlay.stealth-black .ride-lock-telemetry,
+    .ride-lock-overlay.stealth-black .slide-unlock-track,
+    .ride-lock-overlay.stealth-black .ride-lock-hint {
+      opacity: 0.04;
+      transition: opacity 0.4s ease;
+    }
+    .ride-lock-overlay.stealth-black.peeking .ride-lock-status,
+    .ride-lock-overlay.stealth-black.peeking .ride-lock-telemetry,
+    .ride-lock-overlay.stealth-black.peeking .slide-unlock-track,
+    .ride-lock-overlay.stealth-black.peeking .ride-lock-hint {
+      opacity: 1;
+      transition: opacity 0.15s ease;
+    }
+    .ride-lock-top-bar {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      max-width: 340px;
+    }
+    .stealth-toggle-btn {
+      background: #0a0a0a;
+      border: 1px solid #1e293b;
+      color: #64748b;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 6px 11px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .stealth-toggle-btn.active {
+      border-color: #f97316;
+      color: #f97316;
+    }
     .ride-lock-status {
       display: flex;
       align-items: center;
@@ -687,9 +722,12 @@
 
   <!-- OLED Ride Lock / Pocket Mode Overlay -->
   <div id="rideLockOverlay" class="ride-lock-overlay" aria-hidden="true">
-    <div class="ride-lock-status">
-      <span class="ride-lock-dot"></span>
-      <span>OLED Pocket Lock Active</span>
+    <div class="ride-lock-top-bar">
+      <div class="ride-lock-status">
+        <span class="ride-lock-dot"></span>
+        <span>OLED Pocket Lock</span>
+      </div>
+      <button id="stealthBlackBtn" class="stealth-toggle-btn" type="button">🌑 Pure Black</button>
     </div>
 
     <div id="rideLockTelemetry" class="ride-lock-telemetry">
@@ -704,8 +742,8 @@
         <span class="slide-unlock-label">Slide to Unlock →</span>
         <div id="slideUnlockThumb" class="slide-unlock-thumb">🔓</div>
       </div>
-      <div style="font-size:0.68rem; color:#1e293b; text-align:center;">
-        Keep screen on in pocket • Live GPS &amp; volume active
+      <div class="ride-lock-hint" style="font-size:0.68rem; color:#1e293b; text-align:center;">
+        Tap anywhere to peek • Eco-GPS active in pocket
       </div>
     </div>
   </div>
@@ -715,7 +753,7 @@
     <header class="app-header">
       <div class="app-title">
         <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--accent);font-size:14px;">🏍️</span>
-        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.4)</span></span>
+        <span>SpeedVolume <span style="font-size:0.72rem;font-weight:600;color:var(--muted);">(v2.5)</span></span>
       </div>
       <div style="display:flex; gap:6px;">
         <button id="rideLockBtn" class="pill" title="OLED Pocket Lock">🔒 Lock</button>
@@ -781,6 +819,7 @@
       </div>
 
       <audio id="audioEl" playsinline preload="none" crossorigin="anonymous"></audio>
+      <audio id="nextAudioEl" playsinline preload="none" crossorigin="anonymous"></audio>
       <audio id="bgAudioEl" playsinline preload="none"></audio>
     </div>
 
@@ -907,6 +946,7 @@
 
   // --- DOM REFERENCES ---
   const audioEl = document.getElementById('audioEl');
+  const nextAudioEl = document.getElementById('nextAudioEl');
   const bgAudioEl = document.getElementById('bgAudioEl');
   const playBtn = document.getElementById('playBtn');
   const nextBtn = document.getElementById('nextBtn');
@@ -939,6 +979,7 @@
   const iosToast = document.getElementById('iosToast');
   const rideLockBtn = document.getElementById('rideLockBtn');
   const rideLockOverlay = document.getElementById('rideLockOverlay');
+  const stealthBlackBtn = document.getElementById('stealthBlackBtn');
   const rideLockTelemetry = document.getElementById('rideLockTelemetry');
   const lockSpeedDisplay = document.getElementById('lockSpeedDisplay');
   const lockUnitDisplay = document.getElementById('lockUnitDisplay');
@@ -948,16 +989,17 @@
   const slideUnlockThumb = document.getElementById('slideUnlockThumb');
 
   let isRideLocked = false;
+  let isStealthBlack = false;
+  let peekTimer = null;
   let burnInShiftTimer = null;
   let isTrackPlaying = false;
-  let cachedDecodedTrackUrl = null;
-  let cachedDecodedBuffer = null;
-  let activeScaledBlobUrl = null;
-  let scaledBlobGainScalar = null;
   let originalTrackUrl = null;
-  let mediaSourceNode = null;
+  let mediaSourceNodeA = null;
+  let mediaSourceNodeB = null;
+  let activeDeck = audioEl;
+  let standbyDeck = nextAudioEl;
+  let stagedTrackIndex = -1;
   let isUsingBgAudio = false;
-  let bgSyncTimer = null;
   let activePlayRequestId = 0;
 
   let toastTimer = null;
@@ -995,10 +1037,17 @@
       gainNode.gain.setValueAtTime(initialGain, audioCtx.currentTime);
     }
 
-    if (!mediaSourceNode) {
+    if (!mediaSourceNodeA) {
       try {
-        mediaSourceNode = audioCtx.createMediaElementSource(audioEl);
-        mediaSourceNode.connect(gainNode);
+        mediaSourceNodeA = audioCtx.createMediaElementSource(audioEl);
+        mediaSourceNodeA.connect(gainNode);
+      } catch (e) {}
+    }
+
+    if (!mediaSourceNodeB) {
+      try {
+        mediaSourceNodeB = audioCtx.createMediaElementSource(nextAudioEl);
+        mediaSourceNodeB.connect(gainNode);
       } catch (e) {}
     }
 
@@ -1107,22 +1156,54 @@
   });
 
   // --- TRACK LOADING & PLAYBACK ---
+  function stageNextDeck(currentIndex) {
+    if (playlist.length <= 1) {
+      stagedTrackIndex = -1;
+      return;
+    }
+    const nextIdx = (currentIndex + 1) % playlist.length;
+    const nextTrack = playlist[nextIdx];
+    if (!nextTrack || stagedTrackIndex === nextIdx) return;
+
+    stagedTrackIndex = nextIdx;
+    standbyDeck.pause();
+    standbyDeck.crossOrigin = 'anonymous';
+    standbyDeck.preload = 'metadata';
+    standbyDeck.src = nextTrack.url;
+  }
+
   function loadTrack(index, autoPlay = false) {
     if (!playlist.length) return;
     if (synthPlaying) stopDemoSynth();
 
-    currentTrackIndex = ((index % playlist.length) + playlist.length) % playlist.length;
-    const track = playlist[currentTrackIndex];
+    const targetIdx = ((index % playlist.length) + playlist.length) % playlist.length;
+    const track = playlist[targetIdx];
+    currentTrackIndex = targetIdx;
     trackNameEl.textContent = track.name;
-    originalTrackUrl = track.url;
+    if (lockTrackDisplay) lockTrackDisplay.textContent = track.name;
 
-    audioEl.pause();
+    activeDeck.pause();
     bgAudioEl.pause();
     isTrackPlaying = false;
     isUsingBgAudio = false;
 
-    audioEl.crossOrigin = 'anonymous';
-    audioEl.src = track.url;
+    // If the standby deck already pre-staged this exact track, promote it immediately!
+    if (stagedTrackIndex === targetIdx && standbyDeck.src) {
+      const prevActive = activeDeck;
+      activeDeck = standbyDeck;
+      standbyDeck = prevActive;
+      standbyDeck.pause();
+      standbyDeck.removeAttribute('src');
+      stagedTrackIndex = -1;
+      originalTrackUrl = track.url;
+    } else {
+      standbyDeck.pause();
+      stagedTrackIndex = -1;
+      originalTrackUrl = track.url;
+      activeDeck.crossOrigin = 'anonymous';
+      activeDeck.preload = 'auto';
+      activeDeck.src = track.url;
+    }
 
     playBtn.textContent = '▶';
     updateMediaSession(track);
@@ -1135,7 +1216,7 @@
 
   // Seamless Foreground (Speed-Gain Stream) <-> Background (Lock Screen Audio) Handoff
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && watchId !== null) {
+    if (document.visibilityState === 'visible' && (watchId !== null || isRideLocked)) {
       requestWakeLock();
     }
 
@@ -1145,9 +1226,9 @@
 
     if (document.hidden) {
       if (isTrackPlaying && !isUsingBgAudio) {
-        const currentPos = audioEl.currentTime || 0;
+        const currentPos = activeDeck.currentTime || 0;
         isUsingBgAudio = true;
-        audioEl.pause();
+        activeDeck.pause();
         if (!bgAudioEl.src || bgAudioEl.src !== track.url) {
           bgAudioEl.src = track.url;
         }
@@ -1163,9 +1244,9 @@
         isUsingBgAudio = false;
         initAudioEngine();
         try {
-          audioEl.currentTime = currentPos;
+          activeDeck.currentTime = currentPos;
         } catch (e) {}
-        audioEl.play().catch(() => {});
+        activeDeck.play().catch(() => {});
       }
     }
   });
@@ -1181,13 +1262,14 @@
     initAudioEngine();
     handleSpeedUpdate(simToggle.checked ? parseFloat(simSlider.value) : filteredSpeed, true);
 
-    if (!audioEl.src || originalTrackUrl !== track.url) {
+    if (!activeDeck.src || originalTrackUrl !== track.url) {
       originalTrackUrl = track.url;
-      audioEl.crossOrigin = 'anonymous';
-      audioEl.src = track.url;
+      activeDeck.crossOrigin = 'anonymous';
+      activeDeck.preload = 'auto';
+      activeDeck.src = track.url;
     }
 
-    const startOffset = isUsingBgAudio ? (bgAudioEl.currentTime || 0) : (audioEl.currentTime || 0);
+    const startOffset = isUsingBgAudio ? (bgAudioEl.currentTime || 0) : (activeDeck.currentTime || 0);
     bgAudioEl.pause();
     isUsingBgAudio = false;
 
@@ -1196,7 +1278,7 @@
     playBtn.textContent = '⏳';
     renderPlaylist();
 
-    const playPromise = audioEl.play();
+    const playPromise = activeDeck.play();
     if (playPromise !== undefined) {
       playPromise.then(() => {
         if (reqId !== activePlayRequestId) return;
@@ -1205,21 +1287,25 @@
         updateMediaSession(track);
         renderPlaylist();
 
-        if (startOffset > 0 && audioEl.readyState >= 1) {
+        if (startOffset > 0 && activeDeck.readyState >= 1) {
           try {
-            audioEl.currentTime = startOffset;
+            activeDeck.currentTime = startOffset;
           } catch (e) {}
         }
+
+        // Pre-stage next track headers only after current track is safely playing
+        stageNextDeck(currentTrackIndex);
       }).catch((err) => {
         if (reqId !== activePlayRequestId) return;
-        if (audioEl.crossOrigin) {
-          audioEl.removeAttribute('crossorigin');
-          audioEl.src = track.url;
-          audioEl.play().then(() => {
+        if (activeDeck.crossOrigin) {
+          activeDeck.removeAttribute('crossorigin');
+          activeDeck.src = track.url;
+          activeDeck.play().then(() => {
             if (reqId !== activePlayRequestId) return;
             isTrackPlaying = true;
             playBtn.textContent = '⏸';
             renderPlaylist();
+            stageNextDeck(currentTrackIndex);
           }).catch(() => {
             isTrackPlaying = false;
             playBtn.textContent = '▶';
@@ -1236,30 +1322,29 @@
     }
   }
 
-  audioEl.addEventListener('playing', () => {
-    if (isTrackPlaying) {
-      playBtn.textContent = '⏸';
-    }
+  [audioEl, nextAudioEl].forEach((deck) => {
+    deck.addEventListener('playing', () => {
+      if (deck === activeDeck && isTrackPlaying) {
+        playBtn.textContent = '⏸';
+      }
+    });
+    deck.addEventListener('ended', () => {
+      if (deck === activeDeck && playlist.length > 0 && !isUsingBgAudio) {
+        loadTrack(currentTrackIndex + 1, true);
+      }
+    });
   });
 
   function pauseCurrentTrack() {
     stopBufferPlayback();
-    clearInterval(bgSyncTimer);
     isTrackPlaying = false;
     isUsingBgAudio = false;
-    audioEl.muted = false;
     audioEl.pause();
-    bgAudioEl.muted = true;
+    nextAudioEl.pause();
     bgAudioEl.pause();
     playBtn.textContent = '▶';
     renderPlaylist();
   }
-
-  audioEl.addEventListener('ended', () => {
-    if (playlist.length > 0 && !isUsingBgAudio) {
-      loadTrack(currentTrackIndex + 1, true);
-    }
-  });
 
   bgAudioEl.addEventListener('ended', () => {
     if (playlist.length > 0 && isUsingBgAudio) {
@@ -1754,7 +1839,11 @@
         gpsStatus.textContent = `GPS error: ${err.message}`;
         stopGPS();
       },
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+      {
+        enableHighAccuracy: true,
+        maximumAge: isRideLocked ? 1500 : 500,
+        timeout: 10000
+      }
     );
   }
 
@@ -1775,6 +1864,15 @@
   }
 
   // --- OLED RIDE LOCK / POCKET MODE ---
+  function triggerStealthPeek() {
+    if (!isRideLocked || !isStealthBlack) return;
+    rideLockOverlay.classList.add('peeking');
+    clearTimeout(peekTimer);
+    peekTimer = setTimeout(() => {
+      rideLockOverlay.classList.remove('peeking');
+    }, 3500);
+  }
+
   function enterRideLock() {
     isRideLocked = true;
     rideLockOverlay.classList.add('active');
@@ -1799,18 +1897,23 @@
     ];
     clearInterval(burnInShiftTimer);
     burnInShiftTimer = setInterval(() => {
-      shiftIdx = (shiftIdx + 1) % shifts.length;
-      rideLockTelemetry.style.transform = shifts[shiftIdx];
+      if (!isStealthBlack) {
+        shiftIdx = (shiftIdx + 1) % shifts.length;
+        rideLockTelemetry.style.transform = shifts[shiftIdx];
+      }
     }, 25000);
   }
 
   function exitRideLock() {
     isRideLocked = false;
-    rideLockOverlay.classList.remove('active');
+    isStealthBlack = false;
+    rideLockOverlay.classList.remove('active', 'stealth-black', 'peeking');
+    stealthBlackBtn.classList.remove('active');
     rideLockOverlay.setAttribute('aria-hidden', 'true');
     slideUnlockThumb.style.transform = 'translateX(0px)';
     rideLockTelemetry.style.transform = 'translate(0px, 0px)';
     clearInterval(burnInShiftTimer);
+    clearTimeout(peekTimer);
     if (watchId === null && wakeLock) {
       wakeLock.release().catch(() => {});
       wakeLock = null;
@@ -1820,6 +1923,25 @@
 
   rideLockBtn.addEventListener('click', () => {
     enterRideLock();
+  });
+
+  stealthBlackBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    isStealthBlack = !isStealthBlack;
+    stealthBlackBtn.classList.toggle('active', isStealthBlack);
+    rideLockOverlay.classList.toggle('stealth-black', isStealthBlack);
+    if (isStealthBlack) {
+      triggerStealthPeek();
+    } else {
+      rideLockOverlay.classList.remove('peeking');
+    }
+  });
+
+  rideLockOverlay.addEventListener('touchstart', () => {
+    triggerStealthPeek();
+  }, { passive: true });
+  rideLockOverlay.addEventListener('mousedown', () => {
+    triggerStealthPeek();
   });
 
   // Slide-to-Unlock Touch & Mouse Handler (prevents pocket fabric accidental taps)
